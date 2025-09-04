@@ -4,24 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="860cf576-27e6-4611-9465-635d84a294a6" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/backend/rag/hybrid.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/backend/rag/lexical.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/backend/rag/types.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/backend/rerankers/bge_reranker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/backend/rerankers/llm_reranker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/notes" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/CoAssist.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/CoAssist.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/embeddings/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/embeddings/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/llm/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/llm/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/loaders/json_loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/loaders/json_loader.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/rag/corpus.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/rag/corpus.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/rag/faiss_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/rag/faiss_store.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/utils/text.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/utils/text.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-    </list>
+    <list default="true" id="860cf576-27e6-4611-9465-635d84a294a6" name="Changes" comment="changes" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -134,6 +117,15 @@
       <option name="presentableId" value="Default" />
       <updated>1757002609685</updated>
     </task>
+    <task id="LOCAL-00001" summary="changes">
+      <option name="closed" value="true" />
+      <created>1757023848610</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1757023848610</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -146,5 +138,9 @@
         </entry>
       </map>
     </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="changes" />
+    <option name="LAST_COMMIT_MESSAGE" value="changes" />
   </component>
 </project>
