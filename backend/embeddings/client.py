@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Sequence, Optional
 import numpy as np
 import truststore
-from goldmansachs.openai import OpenAI
+from openai import OpenAI
 
 truststore.inject_into_ssl()
 

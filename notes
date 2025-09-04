@@ -1,0 +1,303 @@
+Where RAG lives
+	1.	backend/rag/corpus.py – corpus builder
+	•	Loads your JSON files and agreement.pdf, turns them into plain-text “chunks.”
+	•	JSON → flattened lines (ACCOUNT / STATEMENT / TRANSACTION / PAYMENT).
+	•	PDF → text extracted, chunked (default ~1000 chars, 200 overlap), prefixed with AGREEMENT:.
+	•	Returns a single List[str] = the knowledge corpus.
+	2.	backend/rag/faiss_store.py – vector index + retrieval
+	•	Uses FAISS for fast similarity search.
+	•	Calls the embedding API via backend/embeddings/client.py to turn corpus strings into vectors.
+	•	L2-normalizes embeddings and builds an Inner Product index (cosine similarity via normalization).
+	•	At query time, embeds the question, searches FAISS, and returns the top-k matching chunks.
+	3.	backend/embeddings/client.py – embeddings provider
+	•	Uses your internal goldmansachs.openai client to hit /embeddings (e.g., BAAI/bge-en-icl).
+	•	Returns a float32 NumPy array FAISS can index.
+
+How it works end-to-end
+	1.	In app.py:
+	•	build_corpus(DATA_DIR) → gather JSON + PDF chunks.
+	•	FAISSStore(corpus) → embed + index chunks once (cached), ready for queries.
+	2.	When you ask a question:
+	•	FAISSStore.search(query, k=6) →
+a) embed the query, normalize,
+b) similarity search in FAISS,
+c) return the top-k corpus texts (mix of Agreement + JSON lines).
+	3.	Those retrieved chunks are concatenated into a Context block and sent to Llama (backend/llm/client.py) with a strict system prompt (“only use the provided context”).
+	•	The LLM composes the answer grounded in what FAISS retrieved.
+
+Minimal mental model (pseudo-flow)
+question ──► embed ──► FAISS.search ──► top-k text chunks
+                                   │
+JSON + Agreement ──► embed + index ┘
+top-k + question ──► Llama chat ► grounded answer
+
+Key defaults & knobs
+	•	Chunking: ~1000 chars with 200-char overlap (in utils/text.py).
+	•	Similarity: Cosine via L2-normalization + FAISS Inner Product.
+	•	k (results): faiss_store.search(query, k=5|6) in app.py.
+	•	Embeddings model: BAAI/bge-en-icl (switchable in embeddings/client.py).
+
+
+1. 🔍 Hybrid Search
+
+Problem: Pure dense (vector) search can miss exact matches (e.g., a specific transaction ID, date, or merchant name). Pure keyword search (BM25, TF-IDF) can miss semantic intent (e.g., “minimum due” vs “smallest payment required”).
+
+Hybrid approach:
+	•	Run vector search (semantic similarity) and lexical search (BM25/TF-IDF).
+	•	Combine results by:
+	•	Weighted sum: score = α * dense_score + (1-α) * bm25_score
+	•	Reciprocal rank fusion (RRF): merge lists by position, robust to different score scales.
+
+Example (banking context):
+	•	Query: “What was my July payment?”
+	•	Vector retrieval finds “Scheduled Payment … July 10” (semantic).
+	•	BM25 ensures exact “July” + “Payment” matches are not missed.
+
+Benefit: Precision for structured terms, recall for semantic phrasing.
+
+2. 🔄 Re-ranking
+
+Problem: Top-k FAISS results may include loosely relevant chunks, especially when corpus has repetitive values (balances, dates, amounts).
+
+Solution: Use a cross-encoder or LLM to re-score the top candidates with the full query.
+	•	Step 1: Retrieve 50 candidates from FAISS.
+	•	Step 2: Re-rank with a stronger model (e.g., a mini-LLM, or bge-reranker-base).
+	•	Step 3: Keep top 5 for Llama answer.
+
+Example:
+	•	Query: “Why was interest charged last month?”
+	•	FAISS retrieves 10 statements + transactions with “interest.”
+	•	Re-ranker promotes the agreement clause about “daily balance method” + the statement showing interestCharged=$12.04 above generic mentions.
+
+Benefit: Higher precision in the final context, less hallucination.
+
+
+3. 🏷 Metadata Tagging
+
+Problem: Right now, each chunk is just text. We can’t always tell whether it came from Agreement vs Transaction vs Statement.
+
+Solution: Store extra metadata alongside each chunk:
+{
+  "text": "Transaction ID=12345 type=INTEREST ...",
+  "source": "transaction",
+  "id": "txn-12345",
+  "date": "2025-08-01"
+}
+At query time:
+	•	Return (text, metadata) from FAISS.
+	•	UI shows:
+	•	“📄 Agreement (Section 2.1)”
+	•	“💳 Transaction (txn-12345, 2025-08-01)”
+
+Benefit:
+	•	Traceability: user sees why the assistant answered.
+	•	Filtering: you can restrict queries, e.g., “only search transactions.”
+	•	Auditability: required for banking apps.
+
+⸻
+
+4. ⏳ Freshness
+
+Problem: Banking data (transactions, balances, payments) changes constantly. A stale FAISS index = wrong answers.
+
+Strategies:
+	•	TTL cache (like you already have) → rebuild index every N minutes (e.g., 5min).
+	•	Delta updates → only embed + insert new records (statements, transactions).
+	•	Hot vs cold split:
+	•	JSON (dynamic) = re-indexed frequently.
+	•	Agreement PDF (static) = indexed once, cached.
+	•	Hybrid freshness control:
+	•	If query mentions “today” / “latest” → always hit live JSON API, not cached index.
+	•	Otherwise → serve from FAISS for speed.
+
+Benefit: Balances, payments, and due dates always reflect latest state without retraining.
+
+⸻
+
+Putting it all together
+
+Your RAG pipeline could look like this:
+Query
+ ├─► Vector search (FAISS over JSON+PDF)
+ ├─► BM25 keyword search (JSON fields, PDF text)
+ ├─► Merge results (hybrid scoring)
+ ├─► Re-rank (cross-encoder or mini LLM)
+ └─► Return top-k chunks with metadata (source, id, date)
+      └─► Pass to Llama for grounded answer
+
+ Re-ranking: How it Works
+	1.	Initial retrieval (fast, broad net):
+	•	You ask: “Why was interest charged last month?”
+	•	FAISS (vector) or BM25 (keyword) returns the top 50 most similar chunks from your JSON + agreement corpus.
+	•	These are cheap & fast to compute, but may contain noise (e.g., chunks about unrelated transactions that also mention “interest”).
+	2.	Re-ranking (slow, precise step):
+	•	A more powerful model is run on each (query, candidate_chunk) pair.
+	•	It scores: “How relevant is this chunk to the question?”
+	•	All 50 candidates are re-scored and sorted again.
+	•	The top 5–10 most relevant chunks are selected and passed to Llama for answering.
+
+👉 The idea: let a smarter but slower model focus only on a small pool of candidates.
+
+⸻
+
+🧠 What is a “Mini LLM” in this context?
+	•	A smaller transformer model (100M–1B parameters) fine-tuned for classification or ranking tasks.
+	•	Example: MiniLM family (like all-MiniLM-L6-v2) used widely for semantic search.
+	•	Role: it’s lighter than a full 70B Llama, but smarter than pure embeddings.
+	•	Used in re-ranking pipelines because it’s cheap enough to run on 50 candidates in milliseconds.
+
+⸻
+
+🏷 What is bge-reranker-base?
+	•	BGE = BAAI General Embedding (a family of embedding & reranking models from Beijing Academy of AI).
+	•	bge-reranker-base is a cross-encoder model trained specifically for relevance ranking.
+	•	Works like this:
+	•	Input: [CLS] Query [SEP] Document [SEP]
+	•	Output: A single relevance score (higher = more relevant).
+	•	Typical usage:
+
+from FlagEmbedding import FlagReranker
+reranker = FlagReranker('BAAI/bge-reranker-base', use_fp16=True)
+score = reranker.compute_score(["Why was interest charged?", "Interest was charged due to APR daily balance..."])
+
+This model is much more precise than cosine similarity alone, because it reads the full interaction between the query and candidate text.
+
+⸻
+
+🔬 Putting it Together in Banking Copilot
+	1.	User asks: “Why was interest charged last month?”
+	2.	Retriever (FAISS): returns 50 candidates (JSON + PDF lines that mention “interest”).
+	3.	Re-ranker (bge-reranker-base or MiniLM): re-scores them.
+	•	Promotes the agreement clause about daily balance method.
+	•	Promotes the statement line showing $12.04 interest.
+	•	Pushes down generic “interest rate = 18.24%” lines if less relevant.
+	4.	Top 5 chunks passed to Llama for the final grounded answer.
+
+⸻
+
+⚖️ Why it matters
+	•	Embeddings alone = fast but fuzzy.
+	•	Re-ranker = precise but slower.
+	•	Together, you get the speed of FAISS and the accuracy of cross-encoders.
+	•	That’s why modern RAG stacks almost always use this two-stage pipeline.
+
+⸻
+
+
+What is BAAI/bge-en-icl?
+
+It’s a sentence embedding model released by BAAI (Beijing Academy of Artificial Intelligence) in their BGE (BAAI General Embeddings) family.
+	•	bge → “BAAI General Embedding” (a suite of multilingual embedding models).
+	•	en → English-only version.
+	•	icl → “In-Context Learning” variant (fine-tuned with an instruction/prompt so you can use it in a task-aware way).
+
+In practical terms:
+	•	It’s trained to map English text (queries, documents) into dense vectors that capture semantic meaning.
+	•	Optimized for semantic search, RAG, clustering, and retrieval tasks.
+	•	You use it exactly the way you use text-embedding-3-small or all-MiniLM-L6-v2:
+	1.	Pass in text.
+	2.	Get back a 768-dim (or 1024-dim, depending on variant) vector.
+	3.	Store it in FAISS or another vector DB.
+	4.	Use cosine similarity / dot product to compare queries vs docs.
+
+⸻
+
+🧠 Why “ICL” (In-Context Learning) matters
+	•	The base BGE embeddings are good for vanilla similarity.
+	•	The ICL version is fine-tuned with a prompt template that makes it better at instruction-following tasks.
+	•	Example prompt (from their docs):
+
+Represent this sentence for retrieving relevant documents: <text>
+
+By always encoding text with this “task hint,” the vectors align better with downstream retrieval tasks.
+
+⸻
+
+⚖️ Compared to others
+	•	OpenAI text-embedding-3-small: closed-source, highly optimized, ~1536 dims.
+	•	all-MiniLM-L6-v2: very light (~22M params), fast, but less accurate.
+	•	BAAI/bge-en-icl: open-source, strong performance on MTEB (Massive Text Embedding Benchmark), good trade-off between size, accuracy, and speed.
+
+⸻
+
+🔧 How you’re using it
+
+In your codebase (backend/embeddings/client.py), we set:
+DEFAULT_EMBED_MODEL = "BAAI/bge-en-icl"
+
+That means:
+	•	When FAISS builds the index, it calls your internal OpenAI-compatible embeddings endpoint with model=BAAI/bge-en-icl.
+	•	This gives you semantic vectors for both your JSON banking data and agreement.pdf chunks.
+	•	Queries (“Why was interest charged?”) and documents (“AGREEMENT: Interest uses daily balance…”) end up in the same embedding space → FAISS can match them.
+
+⸻
+
+✅ In short:
+BAAI/bge-en-icl is a strong, open-source English embedding model from BAAI, optimized for semantic retrieval in RAG setups.
+ The “ICL” part makes it behave better in instruction-based retrieval scenarios
+
+
+ Embeddings vs. Re-ranking
+	•	BAAI/bge-en-icl → Embedding model
+	•	Task: turn text into dense vectors (768/1024 dims).
+	•	Use case: vector similarity search (FAISS, Milvus, etc.).
+	•	Metric: cosine similarity / dot product.
+	•	Fast, scalable, works on millions of docs.
+	•	Not a re-ranker — it doesn’t take a query+doc pair and output a relevance score.
+	•	BAAI/bge-reranker-base (or large) → Cross-encoder re-ranking model
+	•	Task: take (query, candidate_doc) as input.
+	•	Output: a single relevance score (higher = better).
+	•	Much slower (runs full transformer per pair), but very precise.
+	•	Typically used on top-k (e.g., 50 candidates from FAISS).
+
+⸻
+
+⚖️ Analogy
+	•	bge-en-icl: fast filter — finds “likely relevant” candidates in a huge haystack.
+	•	bge-reranker-base: final judge — precisely re-scores which of those are actually the best.
+
+⸻
+
+🔄 How they combine in RAG
+	1.	Embed all docs with bge-en-icl.
+	2.	Build FAISS index.
+	3.	At query time:
+	•	Embed the query with bge-en-icl.
+	•	Retrieve top 50 chunks with FAISS.
+	4.	Send (query, chunk) pairs to bge-reranker-base.
+	5.	Sort by reranker scores → keep best 5–10.
+	6.	Send those to Llama.
+
+⸻
+
+🚀 Why not use bge-en-icl for re-ranking?
+
+Because embeddings alone are bi-encoder style: query and doc are encoded separately, and similarity is computed post-hoc. That’s efficient but less precise.
+Re-ranking needs a cross-encoder: it reads query+doc together, which allows deeper interaction (e.g., “does this specific doc actually answer the query?”).
+
+⸻
+
+✅ Answer:
+No — BAAI/bge-en-icl is not a reranker. It’s an embedding model for retrieval.
+For reranking, you need a BGE reranker model such as BAAI/bge-reranker-base or BAAI/bge-reranker-large
+
+⸻
+
+
+Hybrid retrieval: FAISS (semantic via BAAI/bge-en-icl) + BM25 (keyword) with a tunable weight α.
+	•	Re-ranking (optional):
+	•	LLM-based: uses your Llama endpoint to score candidates (0–1) via a tiny JSON protocol.
+	•	BGE cross-encoder: bge-reranker-base via FlagEmbedding if you install it; graceful fallback if not.
+	•	Metadata tagging: every chunk carries source + meta (e.g., transaction, statement, agreement, ids, dates).
+	•	Freshness-aware: cache rebuilds automatically when files in DATA_DIR change (uses a directory mtime fingerprint).
+
+Files to peek at
+	•	backend/rag/corpus.py — builds the corpus from JSON + agreement.pdf, outputs typed Chunk objects with metadata.
+	•	backend/rag/faiss_store.py — FAISS index over chunk texts.
+	•	backend/rag/lexical.py — BM25 lexical search.
+	•	backend/rag/hybrid.py — merges FAISS + BM25 with weighted scores & de-dup.
+	•	backend/rerankers/llm_reranker.py — LLM-based scorer (no extra deps).
+	•	backend/rerankers/bge_reranker.py — optional local cross-encoder reranker (FlagEmbedding).
+	•	backend/utils/text.py — chunker + dir_mtime_fingerprint() for freshness.
+	•	app.py — Streamlit UI with toggles: Hybrid on/off, α weight, candidates N, final K, reranker selection.
+

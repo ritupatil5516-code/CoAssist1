@@ -18,14 +18,14 @@ def load_all(data_dir: str) -> Dict[str, Any]:
         out[k] = load_json(p) if os.path.exists(p) else []
     return out
 
-def flatten_for_rag(data: Dict[str, Any]) -> List[str]:
-    docs: List[str] = []
+def flatten_for_rag(data: Dict[str, Any]) -> List[dict]:
+    docs: List[dict] = []
     for acc in data.get("account_summary", []):
-        docs.append(f"ACCOUNT {acc}")
+        docs.append({"text": f"ACCOUNT {acc}", "source": "account_summary", "meta": {"id": acc.get("accountId")}})
     for st in data.get("statements", []):
-        docs.append(f"STATEMENT {st}")
+        docs.append({"text": f"STATEMENT {st}", "source": "statement", "meta": {"id": st.get("statementId"), "dueDate": st.get("dueDate")}})
     for t in data.get("transactions", []):
-        docs.append(f"TRANSACTION {t}")
+        docs.append({"text": f"TRANSACTION {t}", "source": "transaction", "meta": {"id": t.get("transactionId"), "date": t.get("transactionDateTime")}})
     for p in data.get("payments", []):
-        docs.append(f"PAYMENT {p}")
+        docs.append({"text": f"PAYMENT {p}", "source": "payment", "meta": {"id": p.get("paymentId") or p.get("scheduledPaymentId"), "date": p.get("paymentDateTime")}})
     return docs
