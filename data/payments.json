@@ -1,0 +1,57 @@
+[
+  {
+    "multiTenancyProductName": "cards",
+    "multiTenancyVirtualTenantId": "saturn-saturn-cards-us-patuat",
+    "amount": 100.0,
+    "currencyCode": "USD",
+    "effectiveDateTime": "2025-04-11T04:00:00Z",
+    "frequency": "ONE_TIME",
+    "fundingSource": [
+      {
+        "fundingType": "OFFLINE"
+      }
+    ],
+    "holdStatus": "NEVER_HELD",
+    "isScheduledDaysBeforeDue": false,
+    "paymentDateTime": "2025-04-11T04:00:00Z",
+    "paymentId": "9da9b13c-d958-4ba6-8aba-ee195fbab1936",
+    "referenceId": "f88f4b88-749a-4ff0-bc16-2d7836a4e2bd",
+    "paymentPostedDateTime": "2025-04-11T04:00:00Z",
+    "presentmentType": "FIXED_AMOUNT",
+    "scheduledBy": "e424b34e-30b7-48b6-937a-fc8f9d795597",
+    "state": "POSTED",
+    "timeZone": "America/New_York"
+  },
+  {
+    "multiTenancyProductName": "cards",
+    "multiTenancyVirtualTenantId": "saturn-saturn-cards-us-patuat",
+    "amount": 100.0,
+    "currencyCode": "USD",
+    "effectiveDateTime": "2025-08-22T04:00:01Z",
+    "frequency": "ONE_TIME",
+    "fundingSource": [
+      {
+        "fundingId": "56b14c67-bd2a-4771-b05e-0ee5c5f76e4d",
+        "last4Account": "6789",
+        "fundingType": "ACH",
+        "accountType": "CHECKING",
+        "fundingStatus": "ACTIVE",
+        "nickname": "test",
+        "isCreditRefund": true,
+        "createdBy": "e424b34e-30b7-48b6-937a-fc8f9d795597"
+      }
+    ],
+    "holdReleasedDateTime": "2025-08-22T04:00:01Z",
+    "isScheduledDaysBeforeDue": false,
+    "paymentDateTime": "2025-08-13T04:00:00Z",
+    "presentmentType": "FIXED_AMOUNT",
+    "referenceId": "0cd23d7f-b0ef-43db-9739-bb339f0d4292",
+    "scheduledBy": "e424b34e-30b7-48b6-937a-fc8f9d795597",
+    "scheduledPaymentId": "daf78281-8faa-495b-ae79-689785efe889",
+    "state": "SCHEDULED",
+    "timeZone": "America/New_York",
+    "daysToRelease": 6,
+    "isPaymentHoldStandinDecision": true,
+    "accountId": "f88f4b88-749a-4ff0-bc16-2d7836a4e2bd"
+  }
+]

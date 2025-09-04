@@ -1,0 +1,64 @@
+[
+  {
+    "accountId": "f88f4b88-749a-4ff0-bc16-2d7836a4e2bd",
+    "accountNumberLast4": "6020",
+    "accountStatus": "RESTRICTED",
+    "closedDate": "2025-08-31",
+    "openedDate": "2025-02-11",
+    "persons": [
+      {
+        "personId": "e424b34e-30b7-48b6-937a-fc8f9d795597",
+        "ownershipType": "PRIMARY_OWNER",
+        "accountActivity": {
+          "pendingRedeemRewardBalance": 0.0,
+          "pendingPurchaseAmount": 0.0,
+          "purchaseAmount": 1000.0,
+          "rewardsBalance": 0.0,
+          "rewardsEarned": 0.0,
+          "rewardsRedeemed": 0.0
+        },
+        "personName": {}
+      }
+    ],
+    "accountType": "CARD",
+    "availableCredit": 0.0,
+    "balanceStatus": "PAST_DUE",
+    "cashAdvanceBalance": 0.0,
+    "cashAdvanceAvailableLimit": 0.0,
+    "creditLimit": 40000.0,
+    "currencyCode": "USD",
+    "currentAdjustedBalance": 936.67,
+    "currentBalance": 936.67,
+    "cyclesPastDue": 2,
+    "flags": [
+      "BLOCKED_SPEND"
+    ],
+    "highestPriorityStatus": "DELINQUENT",
+    "installmentsBalance": 0.0,
+    "installmentsRemainingAdjustedBalance": 0.0,
+    "isAutopay": false,
+    "latePaymentMaxFee": 0.0,
+    "minimumDueAmount": 90.0,
+    "numberOfInstallments": 0,
+    "pastDueAmount": 65.0,
+    "paymentDueDate": "2025-09-01",
+    "pendingDueDateTime": "2025-09-01T03:59:57Z",
+    "partnerProductId": 7135,
+    "remainingBalance": 936.67,
+    "revolvingCurrentBalance": 936.67,
+    "rewardsEarned": 0.0,
+    "rewardsRedeemed": 0.0,
+    "subStatuses": [
+      "ACTIVE",
+      "DELINQUENT",
+      "OVERDUE"
+    ],
+    "totalFeesCharged": 0.0,
+    "totalInterestCharged": 0.0,
+    "totalPaymentAmount": 0.0,
+    "purchaseApr": 15.24,
+    "statementBalance": 936.67,
+    "billingCycleCloseDateTime": "2025-09-01T03:59:57Z",
+    "billingCycleOpenDateTime": "2025-08-01T04:00:00Z"
+  }
+]
