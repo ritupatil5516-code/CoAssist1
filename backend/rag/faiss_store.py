@@ -1,14 +1,17 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List, Tuple, Any
 import numpy as np, faiss
 from backend.embeddings.client import EmbeddingService
 from backend.rag.types import Chunk
 
+def _as_chunk(x: Any) -> Chunk:
+    return x if isinstance(x, Chunk) else Chunk(text=str(x), source="unknown", meta={})
+
 class FAISSStore:
-    def __init__(self, chunks: List[Chunk], embedder: EmbeddingService | None = None):
-        self.chunks = chunks
+    def __init__(self, chunks: List[Any], embedder: EmbeddingService | None = None):
+        self.chunks = [_as_chunk(c) for c in chunks]
         self.embedder = embedder or EmbeddingService()
-        texts = [c.text for c in chunks]
+        texts = [c.text for c in self.chunks]
         embs = self.embedder.embed(texts)  # (N, D)
         faiss.normalize_L2(embs)
         self.index = faiss.IndexFlatIP(embs.shape[1])

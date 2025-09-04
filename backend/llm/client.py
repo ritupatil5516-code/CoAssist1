@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 import truststore
-from openai import OpenAI
+from goldmansachs.openai import OpenAI
 
 truststore.inject_into_ssl()
 

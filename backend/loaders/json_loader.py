@@ -18,8 +18,8 @@ def load_all(data_dir: str) -> Dict[str, Any]:
         out[k] = load_json(p) if os.path.exists(p) else []
     return out
 
-def flatten_for_rag(data: Dict[str, Any]) -> List[dict]:
-    docs: List[dict] = []
+def flatten_for_rag(data: Dict[str, Any]) -> List[dict | str]:
+    docs: List[dict | str] = []
     for acc in data.get("account_summary", []):
         docs.append({"text": f"ACCOUNT {acc}", "source": "account_summary", "meta": {"id": acc.get("accountId")}})
     for st in data.get("statements", []):
