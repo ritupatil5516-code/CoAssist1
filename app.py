@@ -53,8 +53,7 @@ with st.sidebar:
     alpha = st.slider("Hybrid weight α (FAISS share)", 0.0, 1.0, float(pack.instructions["retrieval"]["alpha"]), 0.05)
     k_candidates = st.number_input("Candidates (top-N)", 10, 200, int(pack.instructions["retrieval"]["k_candidates"]), 5)
     k_final = st.number_input("Final top-K to Llama", 3, 20, int(pack.instructions["retrieval"]["k_final"]), 1)
-    reranker = st.selectbox("Reranker", options=["none", "bge", "llm"], index=0)
-
+    reranker = st.selectbox("Reranker", options=["none", "sbert", "llm"], index=1)  # default to sbert
 # Build indexes (freshness-aware)
 fingerprint = dir_mtime_fingerprint(str(DATA_DIR))
 

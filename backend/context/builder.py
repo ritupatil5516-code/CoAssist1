@@ -18,9 +18,9 @@ def build_context(query: str, vec: FAISSStore, bm25: Optional[BM25Store],
         merged = vec_res
 
     candidates = [c for c, _ in merged]
-    if reranker == "bge":
-        from backend.rerankers.bge_reranker import rerank_with_bge
-        rr = rerank_with_bge(query, candidates)
+    if reranker == "sbert":
+        from backend.rerankers.sbert_reranker import rerank_with_sbert
+        rr = rerank_with_sbert(query, candidates)
         return rr[:kK]
     if reranker == "llm":
         from backend.rerankers.llm_reranker import rerank_with_llm
