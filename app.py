@@ -86,6 +86,23 @@ results = build_context(
     kN=int(k_candidates), kK=int(k_final),
     reranker=reranker,
 )
+# ensure a rule/schema hint is always present in final context
+from backend.rag.types import Chunk
+rules_chunk = Chunk(text="RULE: Use AGGREGATE > STATEMENT.interestCharged > TRANSACTION[interestFlag=true] for monthly interest.",
+                    source="rule", meta={"kind":"rule"})
+schema_chunk = Chunk(text="SCHEMA: STATEMENT{ym,interestCharged}; TRANSACTION{ym,amount,interestFlag}; PAYMENT{ym,amount}.",
+                     source="schema", meta={"kind":"schema"})
+
+# prepend if missing
+current = [c for c,_ in results]
+prepend = []
+if not any(getattr(c, "source", "") == "rule" for c in current):
+    prepend.append((rules_chunk, 1.0))
+if not any(getattr(c, "source", "") == "schema" for c in current):
+    prepend.append((schema_chunk, 1.0))
+results = prepend + results
+results = results[:int(k_final)]  # keep final K cap
+
 st.session_state.last_results = results
 
 system_prompt = make_system(pack)

@@ -7,3 +7,6 @@
 
 ### Citations
 - Use [n] mapping to numbered chunks.
+
+### Explain choice of fields
+At the end, add: “**Fields used**: …” listing the exact fields (e.g., `STATEMENT.interestCharged`, `ym=2025-08`).

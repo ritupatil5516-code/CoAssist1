@@ -29,3 +29,16 @@ def make_user(pack, conversation_tail, numbered_context, question):
     If insufficient info, follow the refusal playbook:
     {pack.refusal}
     """)
+
+def make_system(pack):
+    return "\n\n".join([
+        pack.system.strip(),
+        "----",
+        pack.retrieval.strip(),
+        "----",
+        pack.answer_style.strip(),
+        "----",
+        "Glossary:\n"+pack.glossary.strip(),
+        "----",
+        "Rules & Schema:\n"+(pack.root / "rules.md").read_text(encoding="utf-8").strip()
+    ])

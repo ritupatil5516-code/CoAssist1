@@ -49,4 +49,14 @@ def build_corpus(data_dir: str) -> List[Chunk]:
         pdf_text = extract_pdf_text(str(pdf))
         for ch in chunk_text(pdf_text, 1000, 200):
             docs.append(Chunk(text="AGREEMENT: " + ch, source="agreement", meta={"file":"agreement.pdf"}))
+
+    # Schema cheat sheet (machine-readable)
+    schema_txt = (
+        "SCHEMA: STATEMENT{ym, interestCharged, endingBalance, minimumAmountDue, totalAmountDue}; "
+        "TRANSACTION{ym, amount, interestFlag, description, type}; "
+        "PAYMENT{ym, amount, status}; "
+        "PREFER: AGGREGATE.interest_from_statements_total > STATEMENT.interestCharged > TRANSACTION[interestFlag=true]"
+    )
+    docs.append(Chunk(text=schema_txt, source="schema", meta={"kind": "schema"}))
+
     return docs
