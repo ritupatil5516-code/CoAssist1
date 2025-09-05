@@ -1,31 +1,72 @@
 from __future__ import annotations
 from typing import Dict, Any, List
-import json, os
+from pathlib import Path
+import json
+from backend.models.banking import BankingData, AccountSummary, Statement, Transaction, Payment
 
-def load_json(path: str):
-    with open(path, "r") as f:
+def _read_json(path: Path):
+    with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 def load_all(data_dir: str) -> Dict[str, Any]:
-    files = {
-        "account_summary": os.path.join(data_dir, "account_summary.json"),
-        "payments": os.path.join(data_dir, "payments.json"),
-        "statements": os.path.join(data_dir, "statements.json"),
-        "transactions": os.path.join(data_dir, "transactions.json"),
+    d = Path(data_dir)
+    def pick(name: str) -> list[dict]:
+        p = d / name
+        return _read_json(p) if p.exists() else []
+    raw = {
+        "account_summary": pick("account_summary.json"),
+        "statements": pick("statements.json"),
+        "transactions": pick("transactions.json"),
+        "payments": pick("payments.json"),
     }
-    out: Dict[str, Any] = {}
-    for k, p in files.items():
-        out[k] = load_json(p) if os.path.exists(p) else []
-    return out
+    # Validate/coerce into Pydantic objects
+    return BankingData(
+        account_summary=[AccountSummary(**x) for x in raw["account_summary"]],
+        statements=[Statement(**x) for x in raw["statements"]],
+        transactions=[Transaction(**x) for x in raw["transactions"]],
+        payments=[Payment(**x) for x in raw["payments"]],
+    ).model_dump(mode="python")
 
-def flatten_for_rag(data: Dict[str, Any]) -> List[dict | str]:
-    docs: List[dict | str] = []
+def flatten_for_rag(data: Dict[str, Any]) -> List[dict]:
+    """
+    Emit labeled, numeric lines so the LLM can reason easily.
+    """
+    docs: List[dict] = []
+
     for acc in data.get("account_summary", []):
-        docs.append({"text": f"ACCOUNT {acc}", "source": "account_summary", "meta": {"id": acc.get("accountId")}})
+        a = AccountSummary(**acc) if not isinstance(acc, AccountSummary) else acc
+        line = (
+            f"ACCOUNT id={a.accountId} product={a.product or a.accountType} "
+            f"currentBalance={a.currentBalance} outstandingBalance={a.outstandingBalance} "
+            f"creditLimit={a.creditLimit} apr={a.apr or a.purchaseApr} openDate={a.openDate}"
+        )
+        docs.append({"text": line, "source": "account_summary", "meta": {"id": a.accountId}})
+
     for st in data.get("statements", []):
-        docs.append({"text": f"STATEMENT {st}", "source": "statement", "meta": {"id": st.get("statementId"), "dueDate": st.get("dueDate")}})
-    for t in data.get("transactions", []):
-        docs.append({"text": f"TRANSACTION {t}", "source": "transaction", "meta": {"id": t.get("transactionId"), "date": t.get("transactionDateTime")}})
-    for p in data.get("payments", []):
-        docs.append({"text": f"PAYMENT {p}", "source": "payment", "meta": {"id": p.get("paymentId") or p.get("scheduledPaymentId"), "date": p.get("paymentDateTime")}})
+        s = Statement(**st) if not isinstance(st, Statement) else st
+        line = (
+            f"STATEMENT id={s.statementId} ym={s.ym} closingDate={s.closingDateTime} dueDate={s.dueDate} "
+            f"interestCharged={s.interestCharged} minimumAmountDue={s.minimumAmountDue} "
+            f"endingBalance={s.endingBalance} totalAmountDue={s.totalAmountDue}"
+        )
+        docs.append({"text": line, "source": "statement", "meta": {"id": s.statementId, "ym": s.ym}})
+
+    for tr in data.get("transactions", []):
+        t = Transaction(**tr) if not isinstance(tr, Transaction) else tr
+        line = (
+            f"TRANSACTION id={t.transactionId} ym={t.ym} date={t.transactionDateTime or t.postingDateTime} "
+            f"type={t.transactionType or t.displayTransactionType} amount={t.amount} "
+            f"description={t.description or t.merchantName} interestFlag={str(t.interestFlag)}"
+        )
+        docs.append({"text": line, "source": "transaction", "meta": {"id": t.transactionId, "ym": t.ym, "interest": t.interestFlag}})
+
+    for py in data.get("payments", []):
+        p = Payment(**py) if not isinstance(py, Payment) else py
+        pid = p.paymentId or p.scheduledPaymentId
+        line = (
+            f"PAYMENT id={pid} ym={p.ym} date={p.paymentDateTime or p.scheduledPaymentDateTime} "
+            f"amount={p.amount} status={p.status or p.paymentStatus}"
+        )
+        docs.append({"text": line, "source": "payment", "meta": {"id": pid, "ym": p.ym}})
+
     return docs
