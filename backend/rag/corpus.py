@@ -1,72 +1,65 @@
 from __future__ import annotations
 from typing import Dict, Any, List
 from pathlib import Path
-import json
-from backend.models.banking import BankingData, AccountSummary, Statement, Transaction, Payment
+from collections import defaultdict
+import re
 
-def _read_json(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+from backend.loaders.json_loader import load_all, flatten_for_rag
+from backend.loaders.pdf_loader import extract_pdf_text
+from backend.utils.text import chunk_text
+from backend.rag.types import Chunk
 
-def load_all(data_dir: str) -> Dict[str, Any]:
-    d = Path(data_dir)
-    def pick(name: str) -> list[dict]:
-        p = d / name
-        return _read_json(p) if p.exists() else []
-    raw = {
-        "account_summary": pick("account_summary.json"),
-        "statements": pick("statements.json"),
-        "transactions": pick("transactions.json"),
-        "payments": pick("payments.json"),
-    }
-    # Validate/coerce into Pydantic objects
-    return BankingData(
-        account_summary=[AccountSummary(**x) for x in raw["account_summary"]],
-        statements=[Statement(**x) for x in raw["statements"]],
-        transactions=[Transaction(**x) for x in raw["transactions"]],
-        payments=[Payment(**x) for x in raw["payments"]],
-    ).model_dump(mode="python")
+def _num_from(label: str, text: str) -> float | None:
+    m = re.search(rf"{label}=([-,\d\.]+)", text)
+    if not m: return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except Exception:
+        return None
 
-def flatten_for_rag(data: Dict[str, Any]) -> List[dict]:
-    """
-    Emit labeled, numeric lines so the LLM can reason easily.
-    """
-    docs: List[dict] = []
+def build_corpus(data_dir: str) -> List[Chunk]:
+    d = Path(data_dir).resolve()
+    docs: List[Chunk] = []
 
-    for acc in data.get("account_summary", []):
-        a = AccountSummary(**acc) if not isinstance(acc, AccountSummary) else acc
-        line = (
-            f"ACCOUNT id={a.accountId} product={a.product or a.accountType} "
-            f"currentBalance={a.currentBalance} outstandingBalance={a.outstandingBalance} "
-            f"creditLimit={a.creditLimit} apr={a.apr or a.purchaseApr} openDate={a.openDate}"
-        )
-        docs.append({"text": line, "source": "account_summary", "meta": {"id": a.accountId}})
+    data = load_all(str(d))
+    flat = flatten_for_rag(data)
+    for row in flat:
+        docs.append(Chunk(text=row["text"], source=row["source"], meta=row.get("meta", {})))
 
-    for st in data.get("statements", []):
-        s = Statement(**st) if not isinstance(st, Statement) else st
-        line = (
-            f"STATEMENT id={s.statementId} ym={s.ym} closingDate={s.closingDateTime} dueDate={s.dueDate} "
-            f"interestCharged={s.interestCharged} minimumAmountDue={s.minimumAmountDue} "
-            f"endingBalance={s.endingBalance} totalAmountDue={s.totalAmountDue}"
-        )
-        docs.append({"text": line, "source": "statement", "meta": {"id": s.statementId, "ym": s.ym}})
+    # Aggregates
+    interest_stmt = defaultdict(float)
+    interest_tx = defaultdict(float)
 
-    for tr in data.get("transactions", []):
-        t = Transaction(**tr) if not isinstance(tr, Transaction) else tr
-        line = (
-            f"TRANSACTION id={t.transactionId} ym={t.ym} date={t.transactionDateTime or t.postingDateTime} "
-            f"type={t.transactionType or t.displayTransactionType} amount={t.amount} "
-            f"description={t.description or t.merchantName} interestFlag={str(t.interestFlag)}"
-        )
-        docs.append({"text": line, "source": "transaction", "meta": {"id": t.transactionId, "ym": t.ym, "interest": t.interestFlag}})
+    for row in flat:
+        if row["source"] == "statement":
+            ym = row["meta"].get("ym")
+            if not ym: continue
+            val = _num_from("interestCharged", row["text"])
+            if val is not None: interest_stmt[ym] += val
 
-    for py in data.get("payments", []):
-        p = Payment(**py) if not isinstance(py, Payment) else py
-        pid = p.paymentId or p.scheduledPaymentId
-        line = (
-            f"PAYMENT id={pid} ym={p.ym} date={p.paymentDateTime or p.scheduledPaymentDateTime} "
-            f"amount={p.amount} status={p.status or p.paymentStatus}"
-        )
-        docs.append({"text": line, "source": "payment", "meta": {"id": pid, "ym": p.ym}})
+    for row in flat:
+        if row["source"] == "transaction" and row["meta"].get("interest"):
+            ym = row["meta"].get("ym")
+            if not ym: continue
+            val = _num_from("amount", row["text"])
+            if val is not None: interest_tx[ym] += abs(val)
+
+    for ym, val in sorted(interest_stmt.items()):
+        docs.append(Chunk(
+            text=f"AGGREGATE ym={ym} interest_from_statements_total={val:.2f} (sum of statement interestCharged for ym)",
+            source="aggregate", meta={"ym": ym, "metric": "interest_from_statements_total"}
+        ))
+    for ym, val in sorted(interest_tx.items()):
+        docs.append(Chunk(
+            text=f"AGGREGATE ym={ym} interest_from_interest_transactions_total={val:.2f} (sum of INTEREST transactions for ym)",
+            source="aggregate", meta={"ym": ym, "metric": "interest_from_interest_transactions_total"}
+        ))
+
+    # Agreement
+    pdf = d / "agreement.pdf"
+    if pdf.exists():
+        pdf_text = extract_pdf_text(str(pdf))
+        for ch in chunk_text(pdf_text, 1000, 200):
+            docs.append(Chunk(text="AGREEMENT: " + ch, source="agreement", meta={"file": "agreement.pdf"}))
 
     return docs

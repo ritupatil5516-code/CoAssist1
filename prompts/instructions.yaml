@@ -1,9 +1,8 @@
-# prompt switches the app reads at runtime
 citations:
-  style: "brackets"           # options: brackets, superscript
+  style: "brackets"
 retrieval:
-  use_hybrid: true            # FAISS + BM25
-  alpha: 0.6                  # FAISS weight in hybrid
+  use_hybrid: true
+  alpha: 0.6
   k_candidates: 40
   k_final: 8
 math:

@@ -4,33 +4,27 @@ from pathlib import Path
 import json
 from backend.models.banking import BankingData, AccountSummary, Statement, Transaction, Payment
 
-def _read_json(path: Path):
+def _read(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
-def load_all(data_dir: str) -> Dict[str, Any]:
+def load_all(data_dir: str) -> dict:
     d = Path(data_dir)
-    def pick(name: str) -> list[dict]:
-        p = d / name
-        return _read_json(p) if p.exists() else []
     raw = {
-        "account_summary": pick("account_summary.json"),
-        "statements": pick("statements.json"),
-        "transactions": pick("transactions.json"),
-        "payments": pick("payments.json"),
+        "account_summary": _read(d/"account_summary.json") if (d/"account_summary.json").exists() else [],
+        "statements": _read(d/"statements.json") if (d/"statements.json").exists() else [],
+        "transactions": _read(d/"transactions.json") if (d/"transactions.json").exists() else [],
+        "payments": _read(d/"payments.json") if (d/"payments.json").exists() else [],
     }
-    # Validate/coerce into Pydantic objects
-    return BankingData(
+    bd = BankingData(
         account_summary=[AccountSummary(**x) for x in raw["account_summary"]],
         statements=[Statement(**x) for x in raw["statements"]],
         transactions=[Transaction(**x) for x in raw["transactions"]],
         payments=[Payment(**x) for x in raw["payments"]],
-    ).model_dump(mode="python")
+    )
+    return bd.model_dump() if hasattr(bd, "model_dump") else bd.dict()
 
 def flatten_for_rag(data: Dict[str, Any]) -> List[dict]:
-    """
-    Emit labeled, numeric lines so the LLM can reason easily.
-    """
     docs: List[dict] = []
 
     for acc in data.get("account_summary", []):

@@ -1,4 +1,3 @@
-from __future__ import annotations
 from pathlib import Path
 import yaml
 
@@ -12,6 +11,5 @@ class PromptPack:
         self.glossary = (root / "glossary.md").read_text(encoding="utf-8")
         self.instructions = yaml.safe_load((root / "instructions.yaml").read_text(encoding="utf-8"))
 
-def load_prompts(prompts_dir: str | Path) -> PromptPack:
-    p = Path(prompts_dir)
-    return PromptPack(p)
+def load_prompts(prompts_dir):
+    return PromptPack(Path(prompts_dir))

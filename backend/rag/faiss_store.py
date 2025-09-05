@@ -1,29 +1,18 @@
-from __future__ import annotations
-from typing import List, Tuple, Any
-import numpy as np, faiss
+import faiss, numpy as np
 from backend.embeddings.client import EmbeddingService
 from backend.rag.types import Chunk
 
-def _as_chunk(x: Any) -> Chunk:
-    return x if isinstance(x, Chunk) else Chunk(text=str(x), source="unknown", meta={})
-
 class FAISSStore:
-    def __init__(self, chunks: List[Any], embedder: EmbeddingService | None = None):
-        self.chunks = [_as_chunk(c) for c in chunks]
+    def __init__(self, chunks, embedder=None):
+        self.chunks = chunks
         self.embedder = embedder or EmbeddingService()
-        texts = [c.text for c in self.chunks]
-        embs = self.embedder.embed(texts)  # (N, D)
+        texts = [c.text for c in chunks]
+        embs = self.embedder.embed(texts)
         faiss.normalize_L2(embs)
         self.index = faiss.IndexFlatIP(embs.shape[1])
         self.index.add(embs)
-
-    def search(self, query: str, k: int = 20) -> List[Tuple[Chunk, float]]:
-        q = self.embedder.embed([query])
-        faiss.normalize_L2(q)
-        D, I = self.index.search(q, k)
-        out: List[Tuple[Chunk, float]] = []
-        for score, idx in zip(D[0].tolist(), I[0].tolist()):
-            if idx == -1:
-                continue
-            out.append((self.chunks[idx], float(score)))
-        return out
+    def search(self, q: str, k: int = 20):
+        qv = self.embedder.embed([q])
+        faiss.normalize_L2(qv)
+        D, I = self.index.search(qv, k)
+        return [(self.chunks[idx], float(score)) for score, idx in zip(D[0], I[0]) if idx != -1]
