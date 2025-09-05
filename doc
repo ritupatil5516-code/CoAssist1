@@ -1,0 +1,122 @@
+🎯 Overview
+
+The Banking Copilot is an LLM-driven, context-engineered retrieval-augmented generation (RAG) app designed to answer banking/credit card questions using:
+	•	Customer data JSON files
+(account-summary.json, statements.json, transactions.json, payments.json)
+	•	A rules PDF (agreement.pdf) describing official interest and fee rules
+
+It is built on LlamaIndex, FAISS, BM25, and a Meta Llama-3.3-70B model, with Qwen3-8B embeddings.
+
+The app supports questions such as:
+	•	“What is my interest this month?”
+	•	“When was my last payment made?”
+	•	“Where did I spend the most this year?”
+
+
+⚙️ Components
+
+1. Data Layer
+	•	JSON Files:
+	•	account-summary.json → account status, credit limit, current balance
+	•	statements.json → ending balances, interest charged, due dates
+	•	transactions.json → all transactions, with flags for interest and merchantName
+	•	payments.json → payment history, last payment detection
+	•	Agreement PDF:
+	•	Defines rules for interest calculation and other credit card policies
+
+⸻
+
+2. Ingestion Layer
+	•	Pydantic Models parse JSON into structured objects.
+	•	Nodes: Each record becomes a TextNode with metadata:
+	•	ym = Year-Month for grouping
+	•	dt_iso = timestamp for freshness scoring
+	•	raw = raw JSON payload
+
+⸻
+
+3. Indexing
+	•	FAISS VectorStoreIndex
+	•	Stores dense embeddings (via Qwen3-8B embedding model)
+	•	Supports semantic search
+	•	BM25Retriever
+	•	Provides lexical keyword retrieval
+	•	Ensures robust handling of numeric or keyword-based queries
+
+⸻
+
+4. Hybrid Retrieval + Freshness
+	•	Combines FAISS + BM25 scores:
+	final_score = α * faiss_score + (1 - α) * bm25_score
+
+	•	Applies freshness decay:
+	final_score = final_score * exp(-λ * age_in_days)
+
+	Ensures:
+	•	Semantic coverage
+	•	Keyword robustness
+	•	Recent documents favored (freshness)
+
+⸻
+
+5. Reranking
+	•	Optional LLM-based reranker (LLMRerank)
+	•	Takes the top-N candidates and re-scores them using Llama-3.3-70B
+	•	Produces a reranked top-K context window
+
+⸻
+
+6. Prompting Layer (Context Engineering)
+	•	System Prompt (prompts/system.md) defines banking rules:
+	•	Interest calculation preference order
+	•	Payment detection
+	•	Spend analysis logic
+	•	Always cite [n] snippets
+	•	Style Prompt (prompts/assistant_style.md) ensures:
+	•	Concise, well-structured answers
+	•	A “Fields used” line for transparency
+
+⸻
+
+7. Answer Generation
+	•	Final context is passed with rules + style into Llama-3.3-70B
+	•	LLM produces:
+	•	Direct answer
+	•	Reasoning steps (short)
+	•	Citations (referring to retrieved nodes)
+	•	Fields used summary
+
+⸻
+
+🔄 Step-by-Step Flow
+	1.	User asks a question (e.g., “What is my interest this month?”)
+	2.	Retriever fetches relevant nodes:
+	•	FAISS semantic match
+	•	BM25 keyword match
+	•	Hybrid scoring + freshness bias
+	3.	LLM reranker (optional) re-scores the candidates
+	4.	Top-K snippets are passed into the system+style prompts
+	5.	Llama-3.3-70B generates the final response, citing relevant nodes
+	6.	Streamlit chat UI displays the answer + expandable retrieved context
+
+⸻
+
+📊 Example Q&A Flow
+
+Q: “What is my total interest this month?”
+	•	Retrieval brings:
+	•	AGGREGATE ym=2024-08 interest_from_statements_total=45.12
+	•	STATEMENT { interestCharged=45.12 }
+	•	LLM applies rule 1 (prefer statement aggregate)
+	•	Answer:
+Your interest for 2024-08 is 45.12 [1].
+Fields used: STATEMENT.interestCharged
+
+⸻
+
+✅ Key Advantages
+	•	LLM-driven: all reasoning delegated to Llama-3.3-70B
+	•	Context-engineered: rules explicitly steer LLM
+	•	Hybrid + Freshness: balances recall, precision, and recency
+	•	Modular: FAISS, BM25, and rerankers can be swapped easily
+	•	Transparent: citations + fields used for auditability

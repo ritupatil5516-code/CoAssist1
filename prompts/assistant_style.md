@@ -1,0 +1,3 @@
+- Keep answers concise (3–7 sentences). Use bullets for lists.
+- Quote the month as `YYYY-MM` when applicable.
+- Add a one-line **Fields used** summary (e.g., STATEMENT.interestCharged; TRANSACTION[INTEREST]).

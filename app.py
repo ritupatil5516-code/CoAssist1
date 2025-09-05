@@ -3,72 +3,75 @@ import os
 from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
+from llama_index.core import Settings
+from llama_index.core.base.response.schema import Response
 
-from backend.utils.text import dir_mtime_fingerprint
-from backend.prompting.loader import load_prompts
-from backend.prompting.composer import make_system, make_user
-from backend.context.builder import build_context
+from core.llm import make_llm, make_embed_model
+from core.indexes import build_indexes
+from core.retrieve import hybrid_with_freshness
+from core.reranker import rerank_nodes
 
-from backend.rag.corpus import build_corpus
-from backend.rag.faiss_store import FAISSStore
-from backend.rag.lexical import BM25Store
+load_dotenv()
 
-from backend.llm.client import LLMClient
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
-APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", APP_DIR / "data")).resolve()
-PROMPTS_DIR = APP_DIR / "prompts"
+USE_HYBRID = os.getenv("USE_HYBRID","true").lower() in ("1","true","yes")
+ALPHA = float(os.getenv("ALPHA","0.6"))
+K_CANDIDATES = int(os.getenv("K_CANDIDATES","40"))
+K_FINAL = int(os.getenv("K_FINAL","8"))
+FRESHNESS_LAMBDA = float(os.getenv("FRESHNESS_LAMBDA","0.01"))
+RERANKER = os.getenv("RERANKER","llm")
 
-load_dotenv(override=False)
-
-REQUIRED = ["account_summary.json", "payments.json", "statements.json", "transactions.json", "agreement.pdf"]
-
-st.set_page_config(page_title="Banking Copilot — No-HF v3", layout="wide")
-st.title("Banking Copilot (No-HuggingFace) — v3")
-st.caption("FAISS + BM25 + optional LLM reranker. Context-engineered prompts.")
-
-pack = load_prompts(PROMPTS_DIR)
+st.set_page_config(page_title="Banking Copilot — LlamaIndex", layout="wide")
+st.title("Agent desktop co‑pilot — LlamaIndex")
 
 with st.sidebar:
-    st.subheader("Data directory")
-    st.code(str(DATA_DIR))
-    DATA_DIR.mkdir(exist_ok=True)
-    files = sorted(p.name for p in DATA_DIR.glob("*"))
-    st.write("Files found:", files)
-    missing = [f for f in REQUIRED if not (DATA_DIR / f).exists()]
-    if missing:
-        st.warning(f"Missing files: {missing}. The app will run, but answers need these to be grounded.")
-
-    st.subheader("Retrieval settings")
-    use_hybrid = st.toggle("Use Hybrid (FAISS + BM25)", value=bool(pack.instructions["retrieval"]["use_hybrid"]))
-    alpha = st.slider("Hybrid weight α (FAISS share)", 0.0, 1.0, float(pack.instructions["retrieval"]["alpha"]), 0.05)
-    k_candidates = st.number_input("Candidates (top-N)", 10, 200, int(pack.instructions["retrieval"]["k_candidates"]), 5)
-    k_final = st.number_input("Final top-K to Llama", 3, 20, int(pack.instructions["retrieval"]["k_final"]), 1)
-    reranker = st.selectbox("Reranker", options=["none", "llm"], index=0)
-
-fingerprint = dir_mtime_fingerprint(str(DATA_DIR))
+    st.subheader("Data files in ./data")
+    st.write(sorted(p.name for p in DATA_DIR.glob("*")))
+    USE_HYBRID = st.toggle("Use Hybrid (FAISS+BM25)", value=USE_HYBRID)
+    ALPHA = st.slider("Hybrid α", 0.0, 1.0, ALPHA, 0.05)
+    K_CANDIDATES = st.number_input("Candidates N", 10, 200, K_CANDIDATES, 5)
+    K_FINAL = st.number_input("Final K to LLM", 3, 20, K_FINAL, 1)
+    FRESHNESS_LAMBDA = st.slider("Freshness λ (per day)", 0.0, 0.05, FRESHNESS_LAMBDA, 0.005)
+    RERANKER = st.selectbox("Reranker", ["none","llm"], index=1 if RERANKER=="llm" else 0)
 
 @st.cache_resource(show_spinner=False)
-def _build(_fp: str):
-    chunks = build_corpus(str(DATA_DIR))
-    return chunks, FAISSStore(chunks), BM25Store(chunks)
+def _build():
+    Settings.llm = make_llm()
+    Settings.embed_model = make_embed_model()
+    built = build_indexes(str(DATA_DIR))
+    system = Path("prompts/system.md").read_text(encoding="utf-8")
+    style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
+    system_prompt = system + "\n\n" + style
+    return built, system_prompt
 
-chunks, vec_store, bm25_store = _build(fingerprint)
+built, SYSTEM = _build()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role":"assistant","content":"Hi! Ask about statements, transactions, payments, balances, or interest rules. I’ll answer from your data + agreement.pdf and cite sources."}]
-if "last_results" not in st.session_state:
-    st.session_state.last_results = []
+def answer(q: str):
+    nodes = hybrid_with_freshness(built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES) if USE_HYBRID             else built.vector_index.as_retriever(similarity_top_k=K_CANDIDATES).retrieve(q)
+    if RERANKER == "llm":
+        nodes = rerank_nodes(nodes, q, k=K_FINAL)
+    else:
+        nodes = nodes[:K_FINAL]
 
-def _recent(limit_chars: int):
-    txts = []
-    for m in st.session_state.messages:
-        role = "User" if m["role"] == "user" else "Assistant"
-        txts.append(f"{role}: {m['content']}")
-    s = "\n".join(txts)
-    return s[-limit_chars:]
+    # compose messages
+    numbered = []
+    for i, n in enumerate(nodes, 1):
+        txt = n.node.get_content()[:1100]
+        numbered.append(f"[{i}] {txt}")
+    from llama_index.core.llms import ChatMessage
+    messages = [
+        ChatMessage(role="system", content=SYSTEM),
+        ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
+    ]
+    out = Settings.llm.chat(messages)  # type: ignore
+    return out.message.content, nodes
 
-for m in st.session_state.messages:
+if "history" not in st.session_state:
+    st.session_state.history = [{"role":"assistant","content":"Hi! Ask about: interest this month/total, interest-causing transactions, last payment (date/amount), statement balance, account status, last posted transaction, top merchants, and spend this month/year."}]
+
+for m in st.session_state.history:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
@@ -76,54 +79,18 @@ q = st.chat_input("Type your question…")
 if not q:
     st.stop()
 
-st.session_state.messages.append({"role": "user", "content": q})
+st.session_state.history.append({"role":"user","content":q})
 with st.chat_message("user"):
     st.markdown(q)
 
-results = build_context(
-    query=q, vec=vec_store, bm25=bm25_store,
-    use_hybrid=use_hybrid, alpha=float(alpha),
-    kN=int(k_candidates), kK=int(k_final),
-    reranker=reranker,
-)
-# ensure a rule/schema hint is always present in final context
-from backend.rag.types import Chunk
-rules_chunk = Chunk(text="RULE: Use AGGREGATE > STATEMENT.interestCharged > TRANSACTION[interestFlag=true] for monthly interest.",
-                    source="rule", meta={"kind":"rule"})
-schema_chunk = Chunk(text="SCHEMA: STATEMENT{ym,interestCharged}; TRANSACTION{ym,amount,interestFlag}; PAYMENT{ym,amount}.",
-                     source="schema", meta={"kind":"schema"})
-
-# prepend if missing
-current = [c for c,_ in results]
-prepend = []
-if not any(getattr(c, "source", "") == "rule" for c in current):
-    prepend.append((rules_chunk, 1.0))
-if not any(getattr(c, "source", "") == "schema" for c in current):
-    prepend.append((schema_chunk, 1.0))
-results = prepend + results
-results = results[:int(k_final)]  # keep final K cap
-
-st.session_state.last_results = results
-
-system_prompt = make_system(pack)
-user_prompt = make_user(
-    pack=pack,
-    conversation_tail=_recent(int(pack.instructions["safety"]["limit_history_chars"])),
-    numbered_context=results,
-    question=q,
-)
-
-llm = LLMClient()
-answer = llm.chat(system_prompt, user_prompt)
+ans, used = answer(q)
 
 with st.chat_message("assistant"):
-    st.markdown(answer)
-st.session_state.messages.append({"role":"assistant","content":answer})
+    st.markdown(ans)
 
-with st.expander("Retrieved context used for the last answer", expanded=False):
-    if st.session_state.last_results:
-        for i,(chunk,score) in enumerate(st.session_state.last_results,1):
-            st.markdown(f"**[{i}]** `{chunk.source}` score={score:.3f}  \nmeta={chunk.meta}")
-            st.write(chunk.text[:1000] + ("..." if len(chunk.text) > 1000 else ""))
-    else:
-        st.info("Ask a question to see the retrieved context here.")
+st.session_state.history.append({"role":"assistant","content":ans})
+
+with st.expander("Retrieved context", expanded=False):
+    for i,n in enumerate(used,1):
+        st.markdown(f"**[{i}]** kind={n.node.metadata.get('kind')} ym={n.node.metadata.get('ym')} dt={n.node.metadata.get('dt_iso')}")
+        st.write(n.node.get_content()[:1000] + ("..." if len(n.node.get_content())>1000 else ""))
