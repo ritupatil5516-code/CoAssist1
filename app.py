@@ -107,8 +107,9 @@ import streamlit as st
 from llama_index.core import Settings
 from llama_index.core.llms import ChatMessage
 
-def stream_answer_with_thinking(q: str, nodes, system_prompt: str) -> str:
-    """Show '🤔 Thinking...' spinner briefly, then stream answer tokens."""
+def stream_with_thinking(q: str, nodes, system_prompt: str) -> str:
+    """Show 'Thinking…' text until first token arrives, then live-stream the answer."""
+    # Build numbered context
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
@@ -119,43 +120,44 @@ def stream_answer_with_thinking(q: str, nodes, system_prompt: str) -> str:
         ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
     ]
 
-    out_placeholder = st.empty()
+    # Two placeholders: one for 'Thinking…', one for the answer
+    thinking_ph = st.empty()
+    answer_ph = st.empty()
+    thinking_ph.markdown("🤔 **Thinking…**")
+
     buf = ""
-
     try:
-        stream_iter = iter(Settings.llm.stream_chat(messages))
+        # Ensure 'Thinking…' renders at least once before we start streaming
+        time.sleep(0.05)
 
-        # Show spinner for at least ~1 second even if first token is fast
-        with st.spinner("🤔 Thinking..."):
-            import time
-            start = time.time()
-            first_chunk = next(stream_iter, None)
-            while first_chunk is None and time.time() - start < 1.0:
-                time.sleep(0.05)
-                first_chunk = next(stream_iter, None)
-
-        if first_chunk is not None:
-            delta = getattr(first_chunk, "delta", None) or getattr(first_chunk, "message", None)
-            first_text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
-            buf += first_text
-            out_placeholder.markdown(buf)
-
-        # Continue streaming remaining chunks
-        for chunk in stream_iter:
+        got_first = False
+        for chunk in Settings.llm.stream_chat(messages):
             delta = getattr(chunk, "delta", None) or getattr(chunk, "message", None)
             text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
-            if text:
-                buf += text
-                out_placeholder.markdown(buf)
+            if not text:
+                continue
+
+            if not got_first:
+                thinking_ph.empty()   # remove 'Thinking…' as soon as the first token arrives
+                got_first = True
+
+            buf += text
+            answer_ph.markdown(buf)
+
+        # If the model produced nothing, keep 'Thinking…' briefly then clear
+        if not got_first:
+            time.sleep(0.5)
+            thinking_ph.empty()
 
         return buf
 
     except Exception:
-        with st.spinner("🤔 Thinking..."):
-            resp = Settings.llm.chat(messages)
-            buf = resp.message.content
-            out_placeholder.markdown(buf)
-            return buf
+        # Fallback (non-streaming)
+        resp = Settings.llm.chat(messages)
+        thinking_ph.empty()
+        buf = resp.message.content
+        answer_ph.markdown(buf)
+        return buf
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Chat history + UI
@@ -198,8 +200,8 @@ with st.chat_message("assistant"):
     if RERANKER == "llm":
         nodes = rerank_nodes(candidates, q, k=K_FINAL)
 
-    # Stream with spinner that disappears at first token
-    answer_md = stream_answer_with_thinking(q, nodes, SYSTEM)
+    # This will show "Thinking…" until the first token lands
+    answer_md = stream_with_thinking(q, nodes, SYSTEM)
     st.markdown(answer_md)
 
 st.session_state.history.append({"role":"assistant","content": answer_md})
