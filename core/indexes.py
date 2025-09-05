@@ -1,20 +1,20 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List
 from dataclasses import dataclass
-from llama_index.core import Document, VectorStoreIndex, StorageContext, Settings
-from llama_index.core.schema import TextNode, MetadataMode
-from llama_index.core.retrievers import BM25Retriever
+from llama_index.core import VectorStoreIndex, StorageContext, Settings
+from llama_index.core.schema import TextNode
 from llama_index.vector_stores.faiss import FaissVectorStore
-import faiss, numpy as np
+import faiss
 
 from core.llm import make_llm, make_embed_model
 from core.data import load_bundle, load_agreement_text
+from core.retrievers.bm25_langchain import LangChainBM25Retriever
 
 @dataclass
 class Built:
     nodes: List[TextNode]
     vector_index: VectorStoreIndex
-    bm25: BM25Retriever
+    bm25: LangChainBM25Retriever
 
 def build_indexes(data_dir: str) -> Built:
     Settings.llm = make_llm()
@@ -47,17 +47,14 @@ def build_indexes(data_dir: str) -> Built:
         dt = r.get("paymentDateTime") or r.get("scheduledPaymentDateTime")
         add("payment", r, r.get("ym"), dt)
 
-    # agreement
     agr = load_agreement_text(data_dir)
     if agr:
         nodes.append(TextNode(text="AGREEMENT " + agr, metadata={"kind": "agreement"}))
 
-    # build FAISS vector index
-    vector_store = FaissVectorStore(faiss_index=faiss.IndexFlatIP(1536))  # dim will auto-fit from first embed
+    vector_store = FaissVectorStore(faiss_index=faiss.IndexFlatIP(1536))
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     v_index = VectorStoreIndex(nodes, storage_context=storage_context)
 
-    # BM25 retriever from nodes
-    bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=50)
+    bm25 = LangChainBM25Retriever.from_nodes(nodes=nodes, similarity_top_k=50)
 
     return Built(nodes=nodes, vector_index=v_index, bm25=bm25)

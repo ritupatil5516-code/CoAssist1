@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List
 from math import exp
 from datetime import datetime, timezone
 from llama_index.core.retrievers import VectorIndexRetriever
@@ -21,8 +21,7 @@ def _freshness_weight(dt_iso: str | None, lam: float) -> float:
     return max(0.2, float(exp(-lam * age_days)))
 
 def hybrid_with_freshness(built: Built, query: str, alpha: float, lam: float, kN: int) -> List[NodeWithScore]:
-    vec_retriever = VectorIndexRetriever(index=built.vector_index, similarity_top_k=kN)
-    vec_nodes = vec_retriever.retrieve(query)
+    vec_nodes = VectorIndexRetriever(index=built.vector_index, similarity_top_k=kN).retrieve(query)
     bm_nodes = built.bm25.retrieve(query)
 
     scores = {}
@@ -31,7 +30,6 @@ def hybrid_with_freshness(built: Built, query: str, alpha: float, lam: float, kN
     for n in bm_nodes:
         scores[id(n.node)] = scores.get(id(n.node), 0.0) + (1-alpha) * n.score
 
-    # apply freshness
     id2node = {id(n.node): n for n in vec_nodes + bm_nodes}
     out = []
     for key, s in scores.items():

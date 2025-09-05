@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import List
 from llama_index.postprocessor.llm_rerank import LLMRerank
 from core.llm import make_llm
 

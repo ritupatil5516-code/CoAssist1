@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 from llama_index.core import Settings
-from llama_index.core.base.response.schema import Response
+from llama_index.core.llms import ChatMessage
 
 from core.llm import make_llm, make_embed_model
 from core.indexes import build_indexes
@@ -23,8 +23,8 @@ K_FINAL = int(os.getenv("K_FINAL","8"))
 FRESHNESS_LAMBDA = float(os.getenv("FRESHNESS_LAMBDA","0.01"))
 RERANKER = os.getenv("RERANKER","llm")
 
-st.set_page_config(page_title="Banking Copilot — LlamaIndex", layout="wide")
-st.title("Agent desktop co‑pilot — LlamaIndex")
+st.set_page_config(page_title="Banking Copilot — LlamaIndex v2", layout="wide")
+st.title("Agent desktop co‑pilot — LlamaIndex v2")
 
 with st.sidebar:
     st.subheader("Data files in ./data")
@@ -44,6 +44,16 @@ def _build():
     system = Path("prompts/system.md").read_text(encoding="utf-8")
     style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
     system_prompt = system + "\n\n" + style
+
+    # Startup BM25 check
+    with st.sidebar:
+        st.markdown("### Startup checks")
+        try:
+            test_q = "statement balance"
+            nodes = built.bm25.retrieve(test_q)
+            st.success(f"BM25 OK — {len(nodes)} nodes for '{test_q}'.")
+        except Exception as e:
+            st.error(f"BM25 check failed: {e}")
     return built, system_prompt
 
 built, SYSTEM = _build()
@@ -55,12 +65,10 @@ def answer(q: str):
     else:
         nodes = nodes[:K_FINAL]
 
-    # compose messages
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
         numbered.append(f"[{i}] {txt}")
-    from llama_index.core.llms import ChatMessage
     messages = [
         ChatMessage(role="system", content=SYSTEM),
         ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
@@ -69,7 +77,7 @@ def answer(q: str):
     return out.message.content, nodes
 
 if "history" not in st.session_state:
-    st.session_state.history = [{"role":"assistant","content":"Hi! Ask about: interest this month/total, interest-causing transactions, last payment (date/amount), statement balance, account status, last posted transaction, top merchants, and spend this month/year."}]
+    st.session_state.history = [{"role":"assistant","content":"Hi! Ask about: interest this month/total, interest-causing transactions, last payment (date/amount), statement balance, account status, last posted transaction, top merchants, spend this month/year."}]
 
 for m in st.session_state.history:
     with st.chat_message(m["role"]):
