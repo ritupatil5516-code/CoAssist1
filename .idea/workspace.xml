@@ -5,7 +5,11 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="860cf576-27e6-4611-9465-635d84a294a6" name="Changes" comment="changes">
+      <change afterPath="$PROJECT_DIR$/backend/rerankers/hybrid.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/backend/rerankers/vector_reranker.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/notes" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/context/builder.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/context/builder.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -174,7 +178,31 @@
       <option name="project" value="LOCAL" />
       <updated>1757034061205</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="changes">
+      <option name="closed" value="true" />
+      <created>1757035008658</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1757035008658</updated>
+    </task>
+    <task id="LOCAL-00008" summary="changes">
+      <option name="closed" value="true" />
+      <created>1757036546626</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1757036546626</updated>
+    </task>
+    <task id="LOCAL-00009" summary="changes">
+      <option name="closed" value="true" />
+      <created>1757037733373</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1757037733373</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">

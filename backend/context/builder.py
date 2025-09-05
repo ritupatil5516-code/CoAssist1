@@ -5,7 +5,7 @@ from backend.rag.faiss_store import FAISSStore
 from backend.rag.lexical import BM25Store
 from backend.rag.hybrid import hybrid_merge
 
-RerankerName = Literal["none", "bge", "llm"]
+RerankerName = Literal["none", "llm"]
 
 def build_context(query: str, vec: FAISSStore, bm25: Optional[BM25Store],
                   use_hybrid: bool, alpha: float, kN: int, kK: int,
@@ -16,12 +16,7 @@ def build_context(query: str, vec: FAISSStore, bm25: Optional[BM25Store],
         merged = hybrid_merge(vec_res, lex_res, alpha=alpha, k=kN)
     else:
         merged = vec_res
-
     candidates = [c for c, _ in merged]
-    if reranker == "sbert":
-        from backend.rerankers.sbert_reranker import rerank_with_sbert
-        rr = rerank_with_sbert(query, candidates)
-        return rr[:kK]
     if reranker == "llm":
         from backend.rerankers.llm_reranker import rerank_with_llm
         rr = rerank_with_llm(query, candidates)

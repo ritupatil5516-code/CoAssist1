@@ -7,12 +7,14 @@ class FAISSStore:
         self.chunks = chunks
         self.embedder = embedder or EmbeddingService()
         texts = [c.text for c in chunks]
-        embs = self.embedder.embed(texts)
+        if getattr(self.embedder, "fit_corpus", None):
+            self.embedder.fit_corpus(texts)
+        embs = self.embedder.embed_corpus(texts)
         faiss.normalize_L2(embs)
         self.index = faiss.IndexFlatIP(embs.shape[1])
         self.index.add(embs)
     def search(self, q: str, k: int = 20):
-        qv = self.embedder.embed([q])
+        qv = self.embedder.embed_query([q])
         faiss.normalize_L2(qv)
         D, I = self.index.search(qv, k)
         return [(self.chunks[idx], float(score)) for score, idx in zip(D[0], I[0]) if idx != -1]

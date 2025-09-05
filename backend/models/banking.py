@@ -2,10 +2,9 @@ from __future__ import annotations
 from typing import Optional
 from datetime import datetime
 
-# Pydantic v1/v2 compatibility
 try:
     from pydantic import BaseModel, Field, field_validator  # v2
-except Exception:  # v1 fallback
+except Exception:
     from pydantic import BaseModel, Field, validator as _validator
     def field_validator(*fields, mode="before"):
         def deco(func):
@@ -13,14 +12,10 @@ except Exception:  # v1 fallback
         return deco
 
 IsoStr = str
-
 def _parse_dt(v: Optional[str]) -> Optional[datetime]:
-    if not v:
-        return None
-    try:
-        return datetime.fromisoformat(v.replace("Z", "+00:00"))
-    except Exception:
-        return None
+    if not v: return None
+    try: return datetime.fromisoformat(v.replace("Z","+00:00"))
+    except Exception: return None
 
 class AccountSummary(BaseModel):
     accountId: str
@@ -42,7 +37,6 @@ class Statement(BaseModel):
     totalAmountDue: Optional[float] = None
     endingBalance: Optional[float] = None
     interestCharged: Optional[float] = None
-
     opening_dt: Optional[datetime] = None
     closing_dt: Optional[datetime] = None
     due_dt: Optional[datetime] = None
@@ -51,15 +45,12 @@ class Statement(BaseModel):
     @field_validator("opening_dt", mode="before")
     def _set_opening_dt(cls, v, info):
         return _parse_dt(info.data.get("openingDateTime"))
-
     @field_validator("closing_dt", mode="before")
     def _set_closing_dt(cls, v, info):
         return _parse_dt(info.data.get("closingDateTime"))
-
     @field_validator("due_dt", mode="before")
     def _set_due_dt(cls, v, info):
         return _parse_dt(info.data.get("dueDate"))
-
     @field_validator("ym", mode="before")
     def _set_ym(cls, v, info):
         dt = _parse_dt(info.data.get("closingDateTime") or info.data.get("openingDateTime") or info.data.get("dueDate"))
@@ -74,7 +65,6 @@ class Transaction(BaseModel):
     description: Optional[str] = None
     merchantName: Optional[str] = None
     amount: float
-
     date_dt: Optional[datetime] = None
     ym: Optional[str] = None
     interestFlag: bool = False
@@ -82,12 +72,10 @@ class Transaction(BaseModel):
     @field_validator("date_dt", mode="before")
     def _set_date_dt(cls, v, info):
         return _parse_dt(info.data.get("transactionDateTime") or info.data.get("postingDateTime"))
-
     @field_validator("ym", mode="before")
     def _set_ym(cls, v, info):
         dt = _parse_dt(info.data.get("transactionDateTime") or info.data.get("postingDateTime"))
         return f"{dt.year:04d}-{dt.month:02d}" if dt else None
-
     @field_validator("interestFlag", mode="before")
     def _set_interest(cls, v, info):
         ttype = (info.data.get("transactionType") or info.data.get("displayTransactionType") or "").upper()
@@ -102,14 +90,12 @@ class Payment(BaseModel):
     amount: Optional[float] = None
     status: Optional[str] = None
     paymentStatus: Optional[str] = None
-
     date_dt: Optional[datetime] = None
     ym: Optional[str] = None
 
     @field_validator("date_dt", mode="before")
     def _set_date_dt(cls, v, info):
         return _parse_dt(info.data.get("paymentDateTime") or info.data.get("scheduledPaymentDateTime"))
-
     @field_validator("ym", mode="before")
     def _set_ym(cls, v, info):
         dt = _parse_dt(info.data.get("paymentDateTime") or info.data.get("scheduledPaymentDateTime"))
