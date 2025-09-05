@@ -103,42 +103,59 @@ def retrieve_with_status(q: str):
         status.update(label="✅ Retrieval complete", state="complete")
         return nodes
 
-def stream_llm_answer(q: str, nodes):
-    """Stream the chat tokens as they arrive; fallback to non-stream with spinner."""
-    # assemble the numbered context
+import streamlit as st
+from llama_index.core import Settings
+from llama_index.core.llms import ChatMessage
+
+def stream_answer_with_thinking(q: str, nodes, system_prompt: str) -> str:
+    """Show a spinner 'Thinking…' until first token arrives, then stream the rest."""
+    # assemble numbered context
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
         numbered.append(f"[{i}] {txt}")
 
     messages = [
-        ChatMessage(role="system", content=SYSTEM),
+        ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
     ]
 
-    ph = st.empty()
+    out_placeholder = st.empty()
     buf = ""
 
-    # Primary path: streaming
     try:
-        for chunk in Settings.llm.stream_chat(messages):  # may raise if backend doesn't support
+        # Create an iterator for streaming
+        stream_iter = iter(Settings.llm.stream_chat(messages))
+
+        # Show spinner until the first token arrives
+        with st.spinner("🤔 Thinking..."):
+            first_chunk = next(stream_iter, None)
+
+        if first_chunk is not None:
+            delta = getattr(first_chunk, "delta", None) or getattr(first_chunk, "message", None)
+            first_text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
+            if first_text:
+                buf += first_text
+                out_placeholder.markdown(buf)
+
+        # Continue streaming remaining chunks (spinner is now gone)
+        for chunk in stream_iter:
             delta = getattr(chunk, "delta", None) or getattr(chunk, "message", None)
-            if not delta:
-                continue
-            text = delta if isinstance(delta, str) else getattr(delta, "content", "")
+            text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
             if not text:
                 continue
             buf += text
-            ph.markdown(buf)
+            out_placeholder.markdown(buf)
+
         return buf
+
     except Exception:
-        # Fallback: single shot with spinner
-        with st.spinner("Generating answer…"):
+        # Fallback: non-streaming with a simple spinner
+        with st.spinner("🤔 Thinking..."):
             resp = Settings.llm.chat(messages)
             buf = resp.message.content
-            ph.markdown(buf)
+            out_placeholder.markdown(buf)
             return buf
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Chat history + UI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -165,11 +182,26 @@ st.session_state.history.append({"role": "user", "content": q})
 with st.chat_message("user"):
     st.markdown(q)
 
-# assistant bubble: retrieval status + streaming answer
 with st.chat_message("assistant"):
-    nodes = retrieve_with_status(q)
-    answer_md = stream_llm_answer(q, nodes)
-st.session_state.history.append({"role": "assistant", "content": answer_md})
+    # Retrieve (hybrid + optional rerank)
+    if USE_HYBRID:
+        candidates = hybrid_with_freshness(
+            built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
+        )
+    else:
+        candidates = built.vector_index.as_retriever(
+            similarity_top_k=K_CANDIDATES
+        ).retrieve(q)
+
+    nodes = candidates[:K_FINAL]
+    if RERANKER == "llm":
+        nodes = rerank_nodes(candidates, q, k=K_FINAL)
+
+    # Stream with spinner that disappears at first token
+    answer_md = stream_answer_with_thinking(q, nodes, SYSTEM)
+    st.markdown(answer_md)
+
+st.session_state.history.append({"role":"assistant","content": answer_md})
 
 # show retrieved context
 with st.expander("Retrieved context", expanded=False):
