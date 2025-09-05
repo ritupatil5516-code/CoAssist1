@@ -14,9 +14,9 @@ from core.indexes import build_indexes
 from core.retrieve import hybrid_with_freshness
 from core.reranker import rerank_nodes
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Env + page setup
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────
+# Setup
+# ────────────────────────────────
 load_dotenv()
 
 DATA_DIR = Path("data")
@@ -42,21 +42,19 @@ with st.sidebar:
     FRESHNESS_LAMBDA = st.slider("Freshness λ (per day)", 0.0, 0.05, FRESHNESS_LAMBDA, 0.005)
     RERANKER = st.selectbox("Reranker", ["none", "llm"], index=1 if RERANKER == "llm" else 0)
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────
 # Build indexes (cached)
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def _build():
-    # Wire LLM + embeddings into LlamaIndex Settings
     Settings.llm = make_llm()
     Settings.embed_model = make_embed_model()
-
     built = build_indexes(str(DATA_DIR))
+
     system = Path("prompts/system.md").read_text(encoding="utf-8")
     style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
     system_prompt = system + "\n\n" + style
 
-    # Startup BM25 check
     with st.sidebar:
         st.markdown("### Startup checks")
         try:
@@ -70,46 +68,12 @@ def _build():
 
 built, SYSTEM = _build()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# UX helpers: status, streaming
-# ──────────────────────────────────────────────────────────────────────────────
-def retrieve_with_status(q: str):
-    """Show a step-by-step status card during retrieval and reranking."""
-    with st.status("Starting…", expanded=True) as status:
-        status.update(label="🔎 Retrieving candidates", state="running")
-        if USE_HYBRID:
-            candidates = hybrid_with_freshness(
-                built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
-            )
-        else:
-            candidates = built.vector_index.as_retriever(
-                similarity_top_k=K_CANDIDATES
-            ).retrieve(q)
-        st.write(f"Got {len(candidates)} candidates.")
-
-        nodes = candidates
-        if RERANKER == "llm":
-            status.update(label="🤔 Reranking with LLM", state="running")
-            # Small progress bar for UX (rerank is a single call)
-            bar = st.progress(0)
-            for i in range(1, 6):
-                time.sleep(0.08)
-                bar.progress(i * 20)
-            nodes = rerank_nodes(candidates, q, k=K_FINAL)
-        else:
-            nodes = nodes[:K_FINAL]
-
-        status.update(label="📦 Context packed", state="running")
-        status.update(label="✅ Retrieval complete", state="complete")
-        return nodes
-
-import streamlit as st
-from llama_index.core import Settings
-from llama_index.core.llms import ChatMessage
-
-def stream_with_thinking(q: str, nodes, system_prompt: str) -> str:
-    """Show 'Thinking…' text until first token arrives, then live-stream the answer."""
-    # Build numbered context
+# ────────────────────────────────
+# Typing animation + streaming
+# ────────────────────────────────
+def stream_with_typing(q: str, nodes, system_prompt: str) -> str:
+    """Show typing animation until first token, then stream tokens cleanly."""
+    # Build context
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
@@ -120,48 +84,54 @@ def stream_with_thinking(q: str, nodes, system_prompt: str) -> str:
         ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
     ]
 
-    # Two placeholders: one for 'Thinking…', one for the answer
-    thinking_ph = st.empty()
-    answer_ph = st.empty()
-    thinking_ph.markdown("🤔 **Thinking…**")
+    indicator = st.empty()
+    answer_box = st.empty()
 
+    # Show typing animation while waiting
+    indicator.markdown("🤔 **Thinking**")
+    start = time.time()
+    got_first = False
     buf = ""
-    try:
-        # Ensure 'Thinking…' renders at least once before we start streaming
-        time.sleep(0.05)
 
-        got_first = False
-        for chunk in Settings.llm.stream_chat(messages):
+    try:
+        stream_iter = Settings.llm.stream_chat(messages)
+
+        for chunk in stream_iter:
             delta = getattr(chunk, "delta", None) or getattr(chunk, "message", None)
             text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
             if not text:
                 continue
 
             if not got_first:
-                thinking_ph.empty()   # remove 'Thinking…' as soon as the first token arrives
+                # Clear typing indicator when first token arrives
+                indicator.empty()
                 got_first = True
 
             buf += text
-            answer_ph.markdown(buf)
+            answer_box.markdown(buf)
 
-        # If the model produced nothing, keep 'Thinking…' briefly then clear
         if not got_first:
-            time.sleep(0.5)
-            thinking_ph.empty()
+            # No tokens, keep "Thinking..." a little then clear
+            while time.time() - start < 1.0:
+                dots = "." * (int((time.time() - start) * 3) % 4)
+                indicator.markdown(f"🤔 **Thinking{dots}**")
+                time.sleep(0.3)
+            indicator.empty()
 
         return buf
 
     except Exception:
-        # Fallback (non-streaming)
-        resp = Settings.llm.chat(messages)
-        thinking_ph.empty()
-        buf = resp.message.content
-        answer_ph.markdown(buf)
-        return buf
+        # Fallback: single-shot with spinner
+        with st.spinner("🤔 Thinking..."):
+            resp = Settings.llm.chat(messages)
+            buf = resp.message.content
+            indicator.empty()
+            answer_box.markdown(buf)
+            return buf
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Chat history + UI
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────
+# Chat UI
+# ────────────────────────────────
 if "history" not in st.session_state:
     st.session_state.history = [{
         "role": "assistant",
@@ -180,13 +150,11 @@ q = st.chat_input("Type your question…")
 if not q:
     st.stop()
 
-# user bubble
 st.session_state.history.append({"role": "user", "content": q})
 with st.chat_message("user"):
     st.markdown(q)
 
 with st.chat_message("assistant"):
-    # Retrieve (hybrid + optional rerank)
     if USE_HYBRID:
         candidates = hybrid_with_freshness(
             built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
@@ -200,18 +168,16 @@ with st.chat_message("assistant"):
     if RERANKER == "llm":
         nodes = rerank_nodes(candidates, q, k=K_FINAL)
 
-    # This will show "Thinking…" until the first token lands
-    answer_md = stream_with_thinking(q, nodes, SYSTEM)
+    answer_md = stream_with_typing(q, nodes, SYSTEM)
     st.markdown(answer_md)
 
-st.session_state.history.append({"role":"assistant","content": answer_md})
+st.session_state.history.append({"role": "assistant", "content": answer_md})
 
-# show retrieved context
 with st.expander("Retrieved context", expanded=False):
     for i, n in enumerate(nodes, 1):
         md = n.node.metadata or {}
         st.markdown(
-            f"**[{i}]** kind={md.get('kind')}  ym={md.get('ym')}  dt={md.get('dt_iso')}"
+            f"**[{i}]** kind={md.get('kind')} ym={md.get('ym')} dt={md.get('dt_iso')}"
         )
         content = n.node.get_content()
         st.write(content[:1000] + ("..." if len(content) > 1000 else ""))
