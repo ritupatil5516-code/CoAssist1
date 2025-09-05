@@ -108,8 +108,7 @@ from llama_index.core import Settings
 from llama_index.core.llms import ChatMessage
 
 def stream_answer_with_thinking(q: str, nodes, system_prompt: str) -> str:
-    """Show a spinner 'Thinking…' until first token arrives, then stream the rest."""
-    # assemble numbered context
+    """Show '🤔 Thinking...' spinner briefly, then stream answer tokens."""
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
@@ -124,38 +123,40 @@ def stream_answer_with_thinking(q: str, nodes, system_prompt: str) -> str:
     buf = ""
 
     try:
-        # Create an iterator for streaming
         stream_iter = iter(Settings.llm.stream_chat(messages))
 
-        # Show spinner until the first token arrives
+        # Show spinner for at least ~1 second even if first token is fast
         with st.spinner("🤔 Thinking..."):
+            import time
+            start = time.time()
             first_chunk = next(stream_iter, None)
+            while first_chunk is None and time.time() - start < 1.0:
+                time.sleep(0.05)
+                first_chunk = next(stream_iter, None)
 
         if first_chunk is not None:
             delta = getattr(first_chunk, "delta", None) or getattr(first_chunk, "message", None)
             first_text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
-            if first_text:
-                buf += first_text
-                out_placeholder.markdown(buf)
+            buf += first_text
+            out_placeholder.markdown(buf)
 
-        # Continue streaming remaining chunks (spinner is now gone)
+        # Continue streaming remaining chunks
         for chunk in stream_iter:
             delta = getattr(chunk, "delta", None) or getattr(chunk, "message", None)
             text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
-            if not text:
-                continue
-            buf += text
-            out_placeholder.markdown(buf)
+            if text:
+                buf += text
+                out_placeholder.markdown(buf)
 
         return buf
 
     except Exception:
-        # Fallback: non-streaming with a simple spinner
         with st.spinner("🤔 Thinking..."):
             resp = Settings.llm.chat(messages)
             buf = resp.message.content
             out_placeholder.markdown(buf)
             return buf
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Chat history + UI
 # ──────────────────────────────────────────────────────────────────────────────
