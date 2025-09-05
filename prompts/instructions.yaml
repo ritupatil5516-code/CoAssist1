@@ -1,0 +1,14 @@
+# prompt switches the app reads at runtime
+citations:
+  style: "brackets"           # options: brackets, superscript
+retrieval:
+  use_hybrid: true            # FAISS + BM25
+  alpha: 0.6                  # FAISS weight in hybrid
+  k_candidates: 40
+  k_final: 8
+math:
+  rounding: 2
+  show_steps: true
+safety:
+  refuse_on_missing_data: true
+  limit_history_chars: 1600
