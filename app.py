@@ -71,9 +71,16 @@ built, SYSTEM = _build()
 # ────────────────────────────────
 # Typing animation + streaming
 # ────────────────────────────────
-def stream_with_typing(q: str, nodes, system_prompt: str) -> str:
-    """Show typing animation until first token, then stream tokens cleanly."""
-    # Build context
+def stream_answer_in_chat(chat_container, q: str, nodes, system_prompt: str) -> str:
+    """
+    Render 'Thinking…' in the assistant chat bubble immediately,
+    then stream tokens into the same bubble. No duplicates.
+    """
+    from llama_index.core.llms import ChatMessage
+    from llama_index.core import Settings
+    import time
+
+    # Build numbered context
     numbered = []
     for i, n in enumerate(nodes, 1):
         txt = n.node.get_content()[:1100]
@@ -84,51 +91,45 @@ def stream_with_typing(q: str, nodes, system_prompt: str) -> str:
         ChatMessage(role="user", content="Context:\n" + "\n\n".join(numbered) + f"\n\nQuestion: {q}")
     ]
 
-    indicator = st.empty()
-    answer_box = st.empty()
+    # Create a placeholder INSIDE the assistant bubble
+    ph = chat_container.empty()
+    # show a visible “Thinking…” immediately
+    ph.markdown("🤔 **Thinking…**")
 
-    # Show typing animation while waiting
-    indicator.markdown("🤔 **Thinking**")
-    start = time.time()
-    got_first = False
     buf = ""
+    got_first = False
 
     try:
-        stream_iter = Settings.llm.stream_chat(messages)
+        # tiny pause to ensure the indicator paints before streaming begins
+        time.sleep(0.15)
 
-        for chunk in stream_iter:
+        for chunk in Settings.llm.stream_chat(messages):
             delta = getattr(chunk, "delta", None) or getattr(chunk, "message", None)
             text = delta if isinstance(delta, str) else getattr(delta, "content", "") or ""
             if not text:
                 continue
 
             if not got_first:
-                # Clear typing indicator when first token arrives
-                indicator.empty()
                 got_first = True
 
             buf += text
-            answer_box.markdown(buf)
+            ph.markdown(buf)   # update same bubble
 
+        # If nothing streamed, keep indicator briefly then clear it
         if not got_first:
-            # No tokens, keep "Thinking..." a little then clear
-            while time.time() - start < 1.0:
-                dots = "." * (int((time.time() - start) * 3) % 4)
-                indicator.markdown(f"🤔 **Thinking{dots}**")
-                time.sleep(0.3)
-            indicator.empty()
+            time.sleep(0.6)
+            ph.empty()
 
         return buf
 
     except Exception:
-        # Fallback: single-shot with spinner
-        with st.spinner("🤔 Thinking..."):
-            resp = Settings.llm.chat(messages)
-            buf = resp.message.content
-            indicator.empty()
-            answer_box.markdown(buf)
-            return buf
-
+        # Fallback (non-streaming) still uses the same placeholder
+        with chat_container:
+            st.spinner("🤔 Thinking…")
+        resp = Settings.llm.chat(messages)
+        buf = resp.message.content
+        ph.markdown(buf)
+        return buf
 # ────────────────────────────────
 # Chat UI
 # ────────────────────────────────
@@ -154,30 +155,38 @@ st.session_state.history.append({"role": "user", "content": q})
 with st.chat_message("user"):
     st.markdown(q)
 
-with st.chat_message("assistant"):
-    if USE_HYBRID:
-        candidates = hybrid_with_freshness(
-            built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
-        )
-    else:
-        candidates = built.vector_index.as_retriever(
-            similarity_top_k=K_CANDIDATES
-        ).retrieve(q)
+# user bubble
+st.session_state.history.append({"role": "user", "content": q})
+with st.chat_message("user"):
+    st.markdown(q)
 
-    nodes = candidates[:K_FINAL]
-    if RERANKER == "llm":
-        nodes = rerank_nodes(candidates, q, k=K_FINAL)
+# assistant bubble as a persistent container
+assistant_box = st.chat_message("assistant")
 
-    answer_md = stream_with_typing(q, nodes, SYSTEM)
-    st.markdown(answer_md)
+# retrieval first
+if USE_HYBRID:
+    candidates = hybrid_with_freshness(
+        built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
+    )
+else:
+    candidates = built.vector_index.as_retriever(
+        similarity_top_k=K_CANDIDATES
+    ).retrieve(q)
 
+nodes = candidates[:K_FINAL]
+if RERANKER == "llm":
+    nodes = rerank_nodes(candidates, q, k=K_FINAL)
+
+# stream answer INSIDE the assistant bubble (shows Thinking… first)
+answer_md = stream_answer_in_chat(assistant_box, q, nodes, SYSTEM)
+
+# save once to history (do not print again)
 st.session_state.history.append({"role": "assistant", "content": answer_md})
 
+# context viewer (unchanged)
 with st.expander("Retrieved context", expanded=False):
     for i, n in enumerate(nodes, 1):
         md = n.node.metadata or {}
-        st.markdown(
-            f"**[{i}]** kind={md.get('kind')} ym={md.get('ym')} dt={md.get('dt_iso')}"
-        )
+        st.markdown(f"**[{i}]** kind={md.get('kind')} ym={md.get('ym')} dt={md.get('dt_iso')}")
         content = n.node.get_content()
         st.write(content[:1000] + ("..." if len(content) > 1000 else ""))
