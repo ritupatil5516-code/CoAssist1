@@ -11,10 +11,7 @@ from llama_index.core.schema import TextNode
 from llama_index.vector_stores.faiss import FaissVectorStore
 import faiss  # pip install faiss-cpu
 
-# We’ll use your project’s loader; adjust import path if your loader lives elsewhere.
-from core.data import load_banking_data  # expected to return a BankingData object
-
-# If you keep a LangChain BM25 wrapper, use it; otherwise fall back to LI BM25.
+# Prefer your LangChain BM25 if present; otherwise fall back to LlamaIndex BM25.
 try:
     from core.bm25_langchain import LangChainBM25Retriever
     _HAS_LC_BM25 = True
@@ -23,7 +20,9 @@ except Exception:
     _HAS_LC_BM25 = False
 
 
-# ---- Policies used by retrieval/LLM (placed into node text & metadata) ----
+# -------------------------
+# Policies & helpers
+# -------------------------
 EXCLUDE_TYPES = {"payment", "refund", "credit", "interest", "fee reversal"}
 
 
@@ -50,7 +49,7 @@ def _ym(dt_iso: Optional[str]) -> Optional[str]:
 
 def _probe_embed_dim() -> int:
     """
-    Robustly get embedding dimension from the configured embed model.
+    Get embedding dimension from the configured embed model.
     IMPORTANT: Settings.embed_model must be set by app.py BEFORE calling build_indexes().
     """
     emb = Settings.embed_model.get_text_embedding("dimension-probe")
@@ -59,6 +58,56 @@ def _probe_embed_dim() -> int:
     return len(emb)
 
 
+def _load_agreement_text(data_dir: Path) -> str:
+    """
+    Best-effort read of agreement.pdf in data_dir.
+    Returns empty string if unavailable.
+    """
+    pdf_path = data_dir / "agreement.pdf"
+    if not pdf_path.exists():
+        return ""
+    # Try PyPDF2 if installed
+    try:
+        from PyPDF2 import PdfReader  # pip install PyPDF2
+        reader = PdfReader(str(pdf_path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:
+        pass
+    # Fallback: raw bytes decode (lossy but non-fatal)
+    try:
+        return pdf_path.read_bytes().decode("latin-1", errors="ignore")
+    except Exception:
+        return ""
+
+
+# -------------------------
+# Direct JSON loader
+# -------------------------
+def _load_json(path: Path) -> list:
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_banking_data(data_dir: Path) -> dict:
+    """
+    Load raw JSON data from /data.
+    Returns dict with lists of dicts: account_summary, statements, transactions, payments.
+    """
+    return {
+        # Note: using 'account-summary.json' (hyphen) per your latest file names.
+        # If your file is 'account_summary.json' (underscore), switch here.
+        "account_summary": _load_json(data_dir / "account-summary.json"),
+        "statements": _load_json(data_dir / "statements.json"),
+        "transactions": _load_json(data_dir / "transactions.json"),
+        "payments": _load_json(data_dir / "payments.json"),
+    }
+
+
+# -------------------------
+# Return type
+# -------------------------
 class Built:
     def __init__(self, nodes: List[TextNode], vector_index: VectorStoreIndex, bm25: Any):
         self.nodes = nodes
@@ -66,47 +115,23 @@ class Built:
         self.bm25 = bm25
 
 
-def _load_agreement_text(data_dir: Path) -> str:
-    """
-    Best-effort read of agreement.pdf. Returns "" if not available.
-    Uses PyPDF2 if installed; falls back to plain bytes decode.
-    """
-    pdf_path = data_dir / "agreement.pdf"
-    if not pdf_path.exists():
-        return ""
-
-    # Try PyPDF2
-    try:
-        from PyPDF2 import PdfReader  # pip install PyPDF2
-        reader = PdfReader(str(pdf_path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception:
-        pass
-
-    # Fallback: raw bytes (not great, but prevents crashes)
-    try:
-        return pdf_path.read_bytes().decode("latin-1", errors="ignore")
-    except Exception:
-        return ""
-
-
+# -------------------------
+# Main builder
+# -------------------------
 def build_indexes(data_dir: str) -> Built:
     """
-    Build all nodes (accounts, statements, transactions, payments, agreement),
-    construct FAISS index with the right dimension, and create a BM25 retriever.
+    Build nodes for accounts, statements, transactions, payments, and agreement rules.
+    Create FAISS with the correct embedding dimension, and a BM25 retriever.
     """
     data_path = Path(data_dir)
-    b = load_banking_data(data_path)  # BankingData with .account_summary/.statements/.transactions/.payments
+    raw = load_banking_data(data_path)
 
     nodes: List[TextNode] = []
 
     # ---- Accounts ----
-    for a in b.account_summary:
-        r = a.model_dump() if hasattr(a, "model_dump") else a  # allow dicts in dev
-        text = (
-            "ACCOUNT\n"
-            "JSON:\n" + json.dumps(r, ensure_ascii=False)
-        )
+    for a in raw.get("account_summary", []):
+        r = a  # already a dict
+        text = "ACCOUNT\nJSON:\n" + json.dumps(r, ensure_ascii=False)
         nodes.append(
             TextNode(
                 text=text,
@@ -123,14 +148,10 @@ def build_indexes(data_dir: str) -> Built:
         )
 
     # ---- Statements ----
-    for s in b.statements:
-        r = s.model_dump() if hasattr(s, "model_dump") else s
-        # prefer closingDateTime for statement month
+    for s in raw.get("statements", []):
+        r = s
         dt_iso = _first(r.get("closingDateTime"), r.get("openingDateTime"), r.get("dueDate"))
-        text = (
-            "STATEMENT\n"
-            "JSON:\n" + json.dumps(r, ensure_ascii=False)
-        )
+        text = "STATEMENT\nJSON:\n" + json.dumps(r, ensure_ascii=False)
         nodes.append(
             TextNode(
                 text=text,
@@ -149,10 +170,10 @@ def build_indexes(data_dir: str) -> Built:
         )
 
     # ---- Transactions ----
-    for t in b.transactions:
-        r = t.model_dump() if hasattr(t, "model_dump") else t
+    for t in raw.get("transactions", []):
+        r = t
 
-        # Canonical date: transactionDateTime → postingDateTime (ignore authDateTime)
+        # Canonical date policy: transactionDateTime → postingDateTime (ignore authDateTime)
         canonical_dt_iso = _first(r.get("transactionDateTime"), r.get("postingDateTime"))
         dtype = (r.get("displayTransactionType") or r.get("transactionType") or "").strip().lower()
         is_debit = str(r.get("debitCreditIndicator", "1")) == "1"
@@ -177,7 +198,9 @@ def build_indexes(data_dir: str) -> Built:
                     "kind": "transaction",
                     "dt_iso": canonical_dt_iso,
                     "ym": _ym(canonical_dt_iso),
-                    "merchantName": r.get("merchantName") or r.get("merchantDescription") or r.get("merchantCategoryName"),
+                    "merchantName": r.get("merchantName")
+                        or r.get("merchantDescription")
+                        or r.get("merchantCategoryName"),
                     "amount": r.get("amount"),
                     "type": dtype,
                     "debit": is_debit,
@@ -188,13 +211,10 @@ def build_indexes(data_dir: str) -> Built:
         )
 
     # ---- Payments ----
-    for p in b.payments:
-        r = p.model_dump() if hasattr(p, "model_dump") else p
+    for p in raw.get("payments", []):
+        r = p
         dt_iso = _first(r.get("paymentDateTime"), r.get("scheduledPaymentDateTime"))
-        text = (
-            "PAYMENT\n"
-            "JSON:\n" + json.dumps(r, ensure_ascii=False)
-        )
+        text = "PAYMENT\nJSON:\n" + json.dumps(r, ensure_ascii=False)
         nodes.append(
             TextNode(
                 text=text,
@@ -223,8 +243,8 @@ def build_indexes(data_dir: str) -> Built:
         raise AssertionError("No nodes created — check your data files in the /data folder.")
 
     # ---- Build FAISS with the correct dimension ----
-    dim = _probe_embed_dim()              # IMPORTANT: Settings.embed_model must be set by app.py beforehand
-    faiss_index = faiss.IndexFlatIP(dim)  # cosine via IP when embeddings are normalized
+    dim = _probe_embed_dim()                 # requires Settings.embed_model to be set in app.py
+    faiss_index = faiss.IndexFlatIP(dim)     # cosine via IP (with normalized embeddings)
     vector_store = FaissVectorStore(faiss_index=faiss_index)
 
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
