@@ -17,7 +17,7 @@ from llama_index.core.llms import ChatMessage
 # project-local modules you already have
 from core.llm import make_llm, make_embed_model
 from core.indexes import build_indexes
-from core.retrieve import hybrid_with_freshness
+from core.retrieve import hybrid_with_freshness, filter_spend_current_month
 from core.reranker import rerank_nodes
 
 # ─────────────────────────────────────────────────────────────
@@ -156,6 +156,10 @@ else:
     candidates = built.vector_index.as_retriever(
         similarity_top_k=K_CANDIDATES
     ).retrieve(q)
+
+# ★ Narrow to this month + spend/outflow only (no payments/refunds/credits/interest)
+if is_spend_query:
+    candidates = filter_spend_current_month(candidates)
 
 nodes = candidates[:K_FINAL]
 if RERANKER == "llm":

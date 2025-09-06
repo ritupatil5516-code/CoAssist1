@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
 from typing import List
 from dataclasses import dataclass
 from llama_index.core import VectorStoreIndex, StorageContext, Settings
@@ -16,12 +19,20 @@ class Built:
     vector_index: VectorStoreIndex
     bm25: LangChainBM25Retriever
 
+EXCLUDE_TYPES = {"payment", "refund", "credit", "interest", "fee reversal"}
+
 def _first(*vals):
     for v in vals:
         if v:
             return v
     return None
 
+def _ym_parts(dt_iso: str):
+    try:
+        dt = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return dt, dt.strftime("%Y-%m")
+    except Exception:
+        return None, None
 
 def build_indexes(data_dir: str) -> Built:
     Settings.llm = make_llm()
@@ -45,30 +56,29 @@ def build_indexes(data_dir: str) -> Built:
         add("statement", r, r.get("ym"), dt)
 
     for t in b.transactions:
-        r = t.model_dump()  # keep all fields
+        r = t.model_dump()  # keep everything
 
-        # ---- canonical date for retrieval/freshness ----
-        canonical_dt = _first(
-            r.get("transactionDateTime"),
-            r.get("postingDateTime"),
-        )
-        ym = r.get("ym")
+        # Canonical date for windows/freshness: transactionDateTime → postingDateTime
+        canonical_dt_iso = _first(r.get("transactionDateTime"), r.get("postingDateTime"))
+        dt_obj, ym = _ym_parts(canonical_dt_iso) if canonical_dt_iso else (None, None)
 
-        # ---- short banner to steer the LLM (keeps all fields below) ----
+        # Normalize type and spend flag: only debit and not excluded types
+        dtype = (r.get("displayTransactionType") or r.get("transactionType") or "").strip().lower()
+        is_debit = str(r.get("debitCreditIndicator", "1")) == "1"
+        is_spend_candidate = bool(is_debit and dtype not in EXCLUDE_TYPES)
+
         banner = (
             "DATE_POLICY: use transactionDateTime; fallback postingDateTime; "
             "ignore authDateTime for time windows/latest/spend.\n"
+            "SPEND_POLICY: only debit; exclude payment/refund/credit/interest.\n"
         )
 
-        # full JSON is still included for completeness
         text = (
-                "TRANSACTION\n"
-                + banner
-                + f"transactionDateTime={r.get('transactionDateTime')}\n"
-                + f"postingDateTime={r.get('postingDateTime')}\n"
-                + f"authDateTime={r.get('authDateTime')}\n"
-                + "JSON:\n"
-                + json.dumps(r, ensure_ascii=False)
+                "TRANSACTION\n" + banner +
+                f"transactionDateTime={r.get('transactionDateTime')}\n"
+                f"postingDateTime={r.get('postingDateTime')}\n"
+                f"authDateTime={r.get('authDateTime')}\n"
+                "JSON:\n" + json.dumps(r, ensure_ascii=False)
         )
 
         nodes.append(
@@ -76,19 +86,14 @@ def build_indexes(data_dir: str) -> Built:
                 text=text,
                 metadata={
                     "kind": "transaction",
-                    "dt_iso": canonical_dt,  # used by freshness
+                    "dt_iso": canonical_dt_iso,  # used by freshness/time filters
                     "ym": ym,
-                    "accountId": r.get("accountId"),
-                    "merchantName": _first(
-                        r.get("merchantName"),
-                        r.get("merchantDescription"),
-                        r.get("merchantCategoryName"),
-                    ),
+                    "merchantName": r.get("merchantName") or r.get("merchantDescription") or r.get(
+                        "merchantCategoryName"),
                     "amount": r.get("amount"),
-                    "displayTransactionType": _first(
-                        r.get("displayTransactionType"),
-                        r.get("transactionType"),
-                    ),
+                    "type": dtype,
+                    "debit": is_debit,
+                    "spend_candidate": is_spend_candidate,  # ★ new
                 },
             )
         )

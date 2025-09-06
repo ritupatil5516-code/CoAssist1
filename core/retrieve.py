@@ -20,6 +20,33 @@ def _freshness_weight(dt_iso: str | None, lam: float) -> float:
     age_days = (datetime.now(timezone.utc) - dt).total_seconds()/86400.0
     return max(0.2, float(exp(-lam * age_days)))
 
+def filter_spend_current_month(nodes, now_utc=None):
+    """Keep only spend/outflow transactions in the current calendar month (UTC)."""
+    if not nodes:
+        return nodes
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    filtered = []
+    for n in nodes:
+        md = getattr(n.node, "metadata", {}) or {}
+        if md.get("kind") != "transaction":
+            # allow non-transaction nodes (agreement, statements) to pass through
+            filtered.append(n)
+            continue
+        if not md.get("spend_candidate", False):
+            continue
+        dt_iso = md.get("dt_iso")
+        if not dt_iso:
+            continue
+        try:
+            dt = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            continue
+        if dt >= month_start and dt <= now_utc:
+            filtered.append(n)
+    return filtered
+
 def hybrid_with_freshness(built: Built, query: str, alpha: float, lam: float, kN: int) -> List[NodeWithScore]:
     vec_nodes = VectorIndexRetriever(index=built.vector_index, similarity_top_k=kN).retrieve(query)
     bm_nodes = built.bm25.retrieve(query)
