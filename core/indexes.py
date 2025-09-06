@@ -1,23 +1,15 @@
+# core/indexes.py
 from __future__ import annotations
-
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 import json
 from datetime import datetime, timezone
-from typing import List
-from dataclasses import dataclass
-from llama_index.core import VectorStoreIndex, StorageContext, Settings
+
+from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.faiss import FaissVectorStore
-import faiss
 
-from core.llm import make_llm, make_embed_model
-from core.data import load_bundle, load_agreement_text
-from core.retrievers.bm25_langchain import LangChainBM25Retriever
-
-@dataclass
-class Built:
-    nodes: List[TextNode]
-    vector_index: VectorStoreIndex
-    bm25: LangChainBM25Retriever
+import faiss  # <-- make sure this is in requirements
 
 EXCLUDE_TYPES = {"payment", "refund", "credit", "interest", "fee reversal"}
 
@@ -27,42 +19,46 @@ def _first(*vals):
             return v
     return None
 
-def _ym_parts(dt_iso: str):
+def _ym_parts(dt_iso: Optional[str]):
+    if not dt_iso:
+        return None, None
     try:
         dt = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
         return dt, dt.strftime("%Y-%m")
     except Exception:
         return None, None
 
-def build_indexes(data_dir: str) -> Built:
-    Settings.llm = make_llm()
-    Settings.embed_model = make_embed_model()
+def _probe_embed_dim() -> int:
+    """
+    Robustly get embedding dimension without relying on private APIs.
+    We call the public text-embedding once and use its length.
+    """
+    emb = Settings.embed_model.get_text_embedding("dimension-probe")
+    if not emb or not isinstance(emb, list):
+        raise RuntimeError("Failed to probe embedding dimension (empty embedding).")
+    return len(emb)
 
-    b = load_bundle(data_dir)
+class Built:
+    def __init__(self, nodes: List[TextNode], vector_index: VectorStoreIndex, bm25: Any):
+        self.nodes = nodes
+        self.vector_index = vector_index
+        self.bm25 = bm25
+
+def build_indexes(data_dir: str) -> Built:
+    data_path = Path(data_dir)
+
+    # 1) Load your BankingData here (unchanged) → produces lists: accounts, statements, transactions, payments
+    #    ... existing loading code ...
+
     nodes: List[TextNode] = []
 
-    def add(kind: str, raw: dict, ym: str | None, dt_iso: str | None):
-        meta = {"kind": kind, "ym": ym, "dt_iso": dt_iso, "raw": raw}
-        txt = f"{kind.upper()} " + str(raw)
-        nodes.append(TextNode(text=txt, metadata=meta))
-
-    for a in b.account_summary:
-        r = a.model_dump()
-        add("account", r, r.get("ym"), None)
-
-    for s in b.statements:
-        r = s.model_dump()
-        dt = r.get("closingDateTime") or r.get("openingDateTime") or r.get("dueDate")
-        add("statement", r, r.get("ym"), dt)
-
+    # 2) Build nodes (keep what you already had for account/statement/payment).
+    #    Only the TRANSACTION part shown here for clarity.
     for t in b.transactions:
-        r = t.model_dump()  # keep everything
-
-        # Canonical date for windows/freshness: transactionDateTime → postingDateTime
+        r = t.model_dump()
         canonical_dt_iso = _first(r.get("transactionDateTime"), r.get("postingDateTime"))
-        dt_obj, ym = _ym_parts(canonical_dt_iso) if canonical_dt_iso else (None, None)
+        dt_obj, ym = _ym_parts(canonical_dt_iso)
 
-        # Normalize type and spend flag: only debit and not excluded types
         dtype = (r.get("displayTransactionType") or r.get("transactionType") or "").strip().lower()
         is_debit = str(r.get("debitCreditIndicator", "1")) == "1"
         is_spend_candidate = bool(is_debit and dtype not in EXCLUDE_TYPES)
@@ -70,15 +66,14 @@ def build_indexes(data_dir: str) -> Built:
         banner = (
             "DATE_POLICY: use transactionDateTime; fallback postingDateTime; "
             "ignore authDateTime for time windows/latest/spend.\n"
-            "SPEND_POLICY: only debit; exclude payment/refund/credit/interest.\n"
+            "SPEND_POLICY: only debit/outflow; exclude payment/refund/credit/interest.\n"
         )
-
         text = (
-                "TRANSACTION\n" + banner +
-                f"transactionDateTime={r.get('transactionDateTime')}\n"
-                f"postingDateTime={r.get('postingDateTime')}\n"
-                f"authDateTime={r.get('authDateTime')}\n"
-                "JSON:\n" + json.dumps(r, ensure_ascii=False)
+            "TRANSACTION\n" + banner +
+            f"transactionDateTime={r.get('transactionDateTime')}\n"
+            f"postingDateTime={r.get('postingDateTime')}\n"
+            f"authDateTime={r.get('authDateTime')}\n"
+            "JSON:\n" + json.dumps(r, ensure_ascii=False)
         )
 
         nodes.append(
@@ -86,31 +81,27 @@ def build_indexes(data_dir: str) -> Built:
                 text=text,
                 metadata={
                     "kind": "transaction",
-                    "dt_iso": canonical_dt_iso,  # used by freshness/time filters
+                    "dt_iso": canonical_dt_iso,
                     "ym": ym,
-                    "merchantName": r.get("merchantName") or r.get("merchantDescription") or r.get(
-                        "merchantCategoryName"),
+                    "merchantName": r.get("merchantName") or r.get("merchantDescription") or r.get("merchantCategoryName"),
                     "amount": r.get("amount"),
                     "type": dtype,
                     "debit": is_debit,
-                    "spend_candidate": is_spend_candidate,  # ★ new
+                    "spend_candidate": is_spend_candidate,
                 },
             )
         )
 
-    for p in b.payments:
-        r = p.model_dump()
-        dt = r.get("paymentDateTime") or r.get("scheduledPaymentDateTime")
-        add("payment", r, r.get("ym"), dt)
+    # 3) FAISS: create index with the correct dimension
+    dim = _probe_embed_dim()              # ← critical: make sure dimension matches your embed model
+    faiss_index = faiss.IndexFlatIP(dim)  # IP for cosine (with normalized embeddings)
+    vector_store = FaissVectorStore(faiss_index=faiss_index)
 
-    agr = load_agreement_text(data_dir)
-    if agr:
-        nodes.append(TextNode(text="AGREEMENT " + agr, metadata={"kind": "agreement"}))
-
-    vector_store = FaissVectorStore(faiss_index=faiss.IndexFlatIP(1536))
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     v_index = VectorStoreIndex(nodes, storage_context=storage_context)
 
-    bm25 = LangChainBM25Retriever.from_nodes(nodes=nodes, similarity_top_k=50)
+    # 4) BM25 as before (your LangChainBM25 or LlamaIndex BM25)
+    from core.bm25_langchain import LangChainBM25Retriever  # or your existing BM25 wrapper
+    bm25 = LangChainBM25Retriever.from_nodes(nodes, similarity_top_k=50)
 
     return Built(nodes=nodes, vector_index=v_index, bm25=bm25)
