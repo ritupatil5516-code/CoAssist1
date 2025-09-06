@@ -16,6 +16,13 @@ class Built:
     vector_index: VectorStoreIndex
     bm25: LangChainBM25Retriever
 
+def _first(*vals):
+    for v in vals:
+        if v:
+            return v
+    return None
+
+
 def build_indexes(data_dir: str) -> Built:
     Settings.llm = make_llm()
     Settings.embed_model = make_embed_model()
@@ -38,9 +45,53 @@ def build_indexes(data_dir: str) -> Built:
         add("statement", r, r.get("ym"), dt)
 
     for t in b.transactions:
-        r = t.model_dump()
-        dt = r.get("postingDateTime") or r.get("transactionDateTime")
-        add("transaction", r, r.get("ym"), dt)
+        r = t.model_dump()  # keep all fields
+
+        # ---- canonical date for retrieval/freshness ----
+        canonical_dt = _first(
+            r.get("transactionDateTime"),
+            r.get("postingDateTime"),
+        )
+        ym = r.get("ym")
+
+        # ---- short banner to steer the LLM (keeps all fields below) ----
+        banner = (
+            "DATE_POLICY: use transactionDateTime; fallback postingDateTime; "
+            "ignore authDateTime for time windows/latest/spend.\n"
+        )
+
+        # full JSON is still included for completeness
+        text = (
+                "TRANSACTION\n"
+                + banner
+                + f"transactionDateTime={r.get('transactionDateTime')}\n"
+                + f"postingDateTime={r.get('postingDateTime')}\n"
+                + f"authDateTime={r.get('authDateTime')}\n"
+                + "JSON:\n"
+                + json.dumps(r, ensure_ascii=False)
+        )
+
+        nodes.append(
+            TextNode(
+                text=text,
+                metadata={
+                    "kind": "transaction",
+                    "dt_iso": canonical_dt,  # used by freshness
+                    "ym": ym,
+                    "accountId": r.get("accountId"),
+                    "merchantName": _first(
+                        r.get("merchantName"),
+                        r.get("merchantDescription"),
+                        r.get("merchantCategoryName"),
+                    ),
+                    "amount": r.get("amount"),
+                    "displayTransactionType": _first(
+                        r.get("displayTransactionType"),
+                        r.get("transactionType"),
+                    ),
+                },
+            )
+        )
 
     for p in b.payments:
         r = p.model_dump()

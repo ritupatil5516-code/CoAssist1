@@ -127,18 +127,33 @@ if RERANKER == "llm":
     nodes = rerank_nodes(candidates, q, k=K_FINAL)
 
 # compact, numbered context (like before)
+is_spend_query = any(
+    k in q.lower()
+    for k in ["spend", "top merchant", "most", "biggest merchant", "highest spend"]
+)
+
 numbered_ctx = []
 for i, n in enumerate(nodes, 1):
-    numbered_ctx.append(f"[{i}] {n.node.get_content()[:1100]}")
+    txt = n.node.get_content()[:1100]
+    numbered_ctx.append(f"[{i}] {txt}")
 ctx = "\n\n".join(numbered_ctx)
+
+policy = ""
+if is_spend_query:
+    try:
+        policy = Path("prompts/date_policy.md").read_text(encoding="utf-8")
+    except Exception:
+        policy = "Use transactionDateTime; fallback postingDateTime; ignore authDateTime."
+
 
 messages = [
     ChatMessage(role="system", content=SYSTEM),
     ChatMessage(
         role="user",
         content=(
-            "Use only the context below. Answer with ONE short sentence.\n\n"
-            f"Context:\n{ctx}\n\nQuestion: {q}"
+            (policy + "\n\n") if policy else ""
+            + "Use only the context below.\n\n"
+              f"Context:\n{ctx}\n\nQuestion: {q}"
         ),
     ),
 ]
