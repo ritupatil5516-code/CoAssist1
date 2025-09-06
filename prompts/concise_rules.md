@@ -19,10 +19,11 @@ STYLE OVERRIDE (CRITICAL):
 - Do not generate long explanations, bullet points, lists, citations, or raw field names.
 
 TIMEFRAME DEFAULT:
-- If the user asks about "where did I spend most", "top merchants", or "total spend",
-  and no explicit timeframe is mentioned, assume the question refers to the **last 1 month**.
-- If the user specifies a timeframe (e.g., "this year", "last 6 months", "between Jan and Mar"),
-  use that instead.
+- If no timeframe is specified for spend/top-merchant/total-spend questions,
+  assume the **current calendar month** (from the 1st of this month to today).
+- If the user explicitly asks for a different period (e.g., last month, last 90 days,
+  year to date, between dates), use that instead.
+
 
 DATE SELECTION:
 - When reading transactions, use **transactionDateTime** as the primary date.

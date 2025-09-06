@@ -1,95 +1,111 @@
-# app.py — stacked chat, concise answers, no JSON extractor
+# app.py — LLM-only RAG with Hybrid Retrieval, Style Profiles, and Month Default
+# Matches the earlier architecture: sidebar controls, FAISS+BM25+optional LLM reranker.
+# Default timeframe for spend/top-merchant questions = current calendar month.
 
 from __future__ import annotations
+
 import os
-from pathlib import Path
 import re
+from pathlib import Path
+from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
-from datetime import datetime
 
 from llama_index.core import Settings
 from llama_index.core.llms import ChatMessage
 
-# project modules you already have
-from core.llm import make_llm, make_embed_model   # make_llm should set temperature≈0.0–0.2, small max_tokens
+# project-local modules you already have
+from core.llm import make_llm, make_embed_model
 from core.indexes import build_indexes
 from core.retrieve import hybrid_with_freshness
 from core.reranker import rerank_nodes
 
-# ───────────────── Setup ─────────────────
+# ─────────────────────────────────────────────────────────────
+# Page & Setup
+# ─────────────────────────────────────────────────────────────
 load_dotenv()
-st.set_page_config(page_title="Banking Copilot — LlamaIndex", layout="wide")
+st.set_page_config(page_title="Agent desktop co-pilot — LlamaIndex", layout="wide")
 st.title("Agent desktop co-pilot — LlamaIndex")
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-# Sidebar controls
+# Sidebar controls (same spirit as before)
 USE_HYBRID = st.sidebar.toggle("Use Hybrid (FAISS + BM25)", value=True)
-ALPHA = st.sidebar.slider("Hybrid α (FAISS share)", 0.0, 1.0, 0.6, 0.05)
+ALPHA = st.sidebar.slider("Hybrid α (FAISS share)", 0.0, 1.0, 0.60, 0.05)
 K_CANDIDATES = st.sidebar.number_input("Candidates N", 10, 200, 40, 5)
 K_FINAL = st.sidebar.number_input("Final K to LLM", 3, 20, 8, 1)
 FRESHNESS_LAMBDA = st.sidebar.slider("Freshness λ/day", 0.0, 0.05, 0.01, 0.005)
 RERANKER = st.sidebar.selectbox("Reranker", ["none", "llm"], index=1)
 
+STYLE_PROFILE = st.sidebar.selectbox(
+    "Answer style",
+    ["concise", "detailed", "audit"],
+    index=0,
+)
+
 st.sidebar.subheader("Data files")
 st.sidebar.write(sorted(p.name for p in DATA_DIR.glob("*")))
 
-# ───────────── Build indexes (cached) ─────────────
-@st.cache_resource(show_spinner=False)
-def _build():
-    Settings.llm = make_llm()                # set temp low & small max_tokens in core/llm.py
-    Settings.embed_model = make_embed_model()
-
-    built = build_indexes(str(DATA_DIR))
-
-    system = Path("prompts/system.md").read_text(encoding="utf-8")
-    style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
-    concise_rule = Path("prompts/concise_rules.md").read_text(encoding="utf-8")
-
-    system_prompt = system + "\n\n" + style + "\n\n" + concise_rule
-    return built, system_prompt
-
-built, SYSTEM = _build()
-
-# ───────────── Small helpers ─────────────
-def _ordinal(n: int) -> str:
-    return "%d%s" % (n, "tsnrhtdd"[(n//10%10!=1)*(n%10<4)*n%10::4])
-
-def _pretty_date(dt_iso: str) -> str:
-    try:
-        s = dt_iso.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        base = dt.strftime(f"%B {_ordinal(dt.day)} %Y")
-        if dt.hour or dt.minute:
-            base += dt.strftime(", %H:%M")
-        return base
-    except Exception:
-        return dt_iso
-
-def first_sentence(text: str) -> str:
-    """Keep the answer tiny: first sentence or trimmed line; strip markdown fences."""
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+def post_process(text: str, allow_two_sentences: bool = False) -> str:
+    """Keep replies short & clean; never echo code fences/policies."""
     if not text:
         return "I couldn’t find that."
-    # remove code fences
     if text.startswith("```"):
-        lines = [ln for ln in text.splitlines() if not ln.startswith("```")]
-        text = " ".join(lines).strip()
-    # prefer first sentence
-    m = re.split(r"(?<=[.!?])\s+", text.strip())
-    s = (m[0] if m else text).strip()
-    # if the model split weirdly, fallback to first line
-    if not s:
-        s = text.splitlines()[0].strip()
-    # collapse spaces
-    s = re.sub(r"\s+", " ", s)
-    # hard cap length
-    if len(s) > 160:
-        s = s[:157].rstrip() + "…"
-    return s
+        text = " ".join(ln for ln in text.splitlines() if not ln.startswith("```"))
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    out = " ".join(parts[:2] if allow_two_sentences else parts[:1]).strip()
+    out = re.sub(r"\s+", " ", out)
+    return (out[:260] or "I couldn’t find that.").rstrip()
 
-# ───────────── Chat state ─────────────
+def _mentions_timeframe(text: str) -> bool:
+    s = text.lower()
+    return any(w in s for w in ["month", "year", "week", "day", "between", "since", "from", "to", "range"])
+
+def _load_rules(profile: str) -> str:
+    fname_map = {
+        "concise":  "prompts/concise_rules.md",
+        "detailed": "prompts/detailed_rules.md",
+        "audit":    "prompts/audit_rules.md",
+    }
+    path = Path(fname_map.get(profile, "prompts/concise_rules.md"))
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        # Minimal safe fallback if a rules file is missing
+        return (
+            "META: Never restate internal policies/fields. Answer briefly and clearly. "
+            "For spend/top-merchant without timeframe, assume the current calendar month. "
+            "For transaction dates use transactionDateTime; fallback postingDateTime; ignore authDateTime."
+        )
+
+# ─────────────────────────────────────────────────────────────
+# Build (cached) — same pattern as before
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def _build(style_profile: str):
+    # Wire LLM + embeddings into LlamaIndex Settings
+    Settings.llm = make_llm()             # keep temp low / max_tokens modest in core/llm.py
+    Settings.embed_model = make_embed_model()
+
+    built = build_indexes(str(DATA_DIR))  # builds vector index + bm25 inside your code
+
+    # Compose system prompt from files
+    system = Path("prompts/system.md").read_text(encoding="utf-8")
+    style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
+    profile_rules = _load_rules(style_profile)
+
+    system_prompt = system + "\n\n" + style + "\n\n" + profile_rules
+    return built, system_prompt
+
+built, SYSTEM = _build(STYLE_PROFILE)
+
+# ─────────────────────────────────────────────────────────────
+# Chat history (stacked bubbles)
+# ─────────────────────────────────────────────────────────────
 if "history" not in st.session_state:
     st.session_state.history = [{
         "role": "assistant",
@@ -100,19 +116,38 @@ if "history" not in st.session_state:
         ),
     }]
 
-# Render history stacked
 for m in st.session_state.history:
     st.chat_message(m["role"]).write(m["content"])
 
-# ───────────── Handle new input ─────────────
+# ─────────────────────────────────────────────────────────────
+# Input
+# ─────────────────────────────────────────────────────────────
 q = st.chat_input("Type your question…")
 if not q:
     st.stop()
 
-# show user bubble
+# echo user
 st.chat_message("user").write(q)
 
-# retrieval
+# Apply timeframe normalization rule for spend queries
+is_spend_query = any(
+    k in q.lower()
+    for k in ["spend", "top merchant", "most", "highest spend"]
+)
+
+default_timeframe_hint = ""
+if is_spend_query and not _mentions_timeframe(q):
+    # New default: current calendar month (so “where did I spend most?” == “this month?”)
+    default_timeframe_hint = (
+        "\n- If no timeframe is specified, assume the **current calendar month** "
+        "(from the 1st of this month to today) and include the phrase “this month”."
+    )
+    # Also disambiguate the user text to reduce LLM variance
+    q += " (assume current calendar month)"
+
+# ─────────────────────────────────────────────────────────────
+# Retrieval (Hybrid or Vector-only) + optional LLM rerank
+# ─────────────────────────────────────────────────────────────
 if USE_HYBRID:
     candidates = hybrid_with_freshness(
         built, q, alpha=ALPHA, lam=FRESHNESS_LAMBDA, kN=K_CANDIDATES
@@ -126,56 +161,56 @@ nodes = candidates[:K_FINAL]
 if RERANKER == "llm":
     nodes = rerank_nodes(candidates, q, k=K_FINAL)
 
-# compact, numbered context (like before)
-is_spend_query = any(
-    k in q.lower()
-    for k in ["spend", "top merchant", "most", "biggest merchant", "highest spend"]
-)
-
+# Compact, numbered context for the LLM
 numbered_ctx = []
 for i, n in enumerate(nodes, 1):
-    txt = n.node.get_content()[:1100]
-    numbered_ctx.append(f"[{i}] {txt}")
+    txt = n.node.get_content()
+    numbered_ctx.append(f"[{i}] {txt[:1100]}")
 ctx = "\n\n".join(numbered_ctx)
 
-policy = ""
-if is_spend_query:
-    try:
-        policy = Path("prompts/date_policy.md").read_text(encoding="utf-8")
-    except Exception:
-        policy = "Use transactionDateTime; fallback postingDateTime; ignore authDateTime."
-
+# ─────────────────────────────────────────────────────────────
+# Compose messages — LLM-only answering, no Python fallbacks
+# ─────────────────────────────────────────────────────────────
 user_content = (
-    "TASK: Answer the question using the account data and agreement rules.\n"
-    "Rules:\n"
-    "- Never repeat internal policies or fields (like transactionDateTime).\n"
-    "- For 'where did I spend most?' default to last 1 month unless specified.\n"
-    "- For dates, output in clear format (e.g., September 1, 2024).\n"
-    "- Keep answers short, natural, and user-friendly.\n\n"
-    f"Context:\n{ctx}\n\nQuestion: {q}"
+    "TASK: Answer the question using the retrieved account data and agreement rules.\n"
+    "Hard rules:\n"
+    "- Never restate internal policies or field names (do not say 'we use transactionDateTime').\n"
+    "- For transaction dates: use transactionDateTime; if missing use postingDateTime; ignore authDateTime.\n"
+    "- Keep answers short, natural, and user-friendly per the selected style profile.\n"
+    "- Output dates in a clear human format (e.g., September 1, 2024)."
+    + default_timeframe_hint +
+    "\n\nUse only this context:\n" + ctx +
+    "\n\nQuestion: " + q
 )
+
 messages = [
     ChatMessage(role="system", content=SYSTEM),
     ChatMessage(role="user", content=user_content),
 ]
 
-# ask LLM (non-streaming)
+# ─────────────────────────────────────────────────────────────
+# Ask LLM
+# ─────────────────────────────────────────────────────────────
 with st.spinner("Thinking..."):
     resp = Settings.llm.chat(messages)
 
-answer_raw = resp.message.content or ""
-answer = first_sentence(answer_raw)
+raw = (resp.message.content or "").strip()
+allow_two = (STYLE_PROFILE in {"detailed", "audit"})
+answer = post_process(raw, allow_two_sentences=allow_two)
 
-# show assistant bubble
 st.chat_message("assistant").write(answer)
 
-# persist
+# keep history
 st.session_state.history.append({"role": "user", "content": q})
 st.session_state.history.append({"role": "assistant", "content": answer})
 
-# optional: show retrieved context
+# Show retrieved context for transparency/debugging
 with st.expander("Retrieved context", expanded=False):
     for i, n in enumerate(nodes, 1):
         md = n.node.metadata or {}
-        st.markdown(f"**[{i}]** kind={md.get('kind')}  ym={md.get('ym')}  dt={md.get('dt_iso')}")
-        st.write(n.node.get_content()[:1000] + ("..." if len(n.node.get_content()) > 1000 else ""))
+        st.markdown(
+            f"**[{i}]** kind={md.get('kind')}  ym={md.get('ym')}  dt={md.get('dt_iso')}  "
+            f"merchant={md.get('merchantName')}  amount={md.get('amount')}"
+        )
+        body = n.node.get_content()
+        st.write((body[:1500] + ("..." if len(body) > 1500 else "")))
