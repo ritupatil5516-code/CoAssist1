@@ -145,17 +145,18 @@ if is_spend_query:
     except Exception:
         policy = "Use transactionDateTime; fallback postingDateTime; ignore authDateTime."
 
-
+user_content = (
+    "TASK: Answer the question using the account data and agreement rules.\n"
+    "Rules:\n"
+    "- Never repeat internal policies or fields (like transactionDateTime).\n"
+    "- For 'where did I spend most?' default to last 1 month unless specified.\n"
+    "- For dates, output in clear format (e.g., September 1, 2024).\n"
+    "- Keep answers short, natural, and user-friendly.\n\n"
+    f"Context:\n{ctx}\n\nQuestion: {q}"
+)
 messages = [
     ChatMessage(role="system", content=SYSTEM),
-    ChatMessage(
-        role="user",
-        content=(
-            (policy + "\n\n") if policy else ""
-            + "Use only the context below.\n\n"
-              f"Context:\n{ctx}\n\nQuestion: {q}"
-        ),
-    ),
+    ChatMessage(role="user", content=user_content),
 ]
 
 # ask LLM (non-streaming)
