@@ -46,14 +46,8 @@ def _build():
 
     system = Path("prompts/system.md").read_text(encoding="utf-8")
     style = Path("prompts/assistant_style.md").read_text(encoding="utf-8")
+    concise_rule = Path("prompts/concise_rules.md").read_text(encoding="utf-8")
 
-    # Force brevity here so we don’t rely on JSON parsing
-    concise_rule = """
-STYLE OVERRIDE (CRITICAL):
-- Answer in ONE short sentence (<= 18 words).
-- No bullet points, no lists, no citations, no field names.
-- Return only the final fact in plain English.
-"""
     system_prompt = system + "\n\n" + style + "\n\n" + concise_rule
     return built, system_prompt
 
