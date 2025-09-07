@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from pathlib import Path
 from datetime import datetime
 import streamlit as st
@@ -20,6 +21,13 @@ from core.llm import make_llm, make_embed_model
 from core.indexes import build_indexes          # returns Built(nodes, vector_index, bm25)
 from core.retrieve import hybrid_with_freshness, filter_spend_current_month
 from core.reranker import rerank_nodes          # optional LLM reranker
+
+# >>> NEW: short answers (your current file API)
+from core.short_answers import (
+    detect_intent,
+    build_extraction_prompt,
+    format_answer,
+)
 
 # ─────────────────────────────────────────────────────────────
 # Page & Setup
@@ -72,8 +80,25 @@ def _load_rules(profile: str) -> str:
             "For transaction dates use transactionDateTime; fallback postingDateTime; ignore authDateTime."
         )
 
+def _strip_code_fences(s: str) -> str:
+    if s.startswith("```"):
+        s = "\n".join(ln for ln in s.splitlines() if not ln.strip().startswith("```"))
+    return s.strip()
+
+def _coerce_json(s: str):
+    """
+    Be lenient with model output: strip fences, find first {...} block.
+    """
+    s = _strip_code_fences(s)
+    # grab first top-level JSON object
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        s = s[start:end+1]
+    return json.loads(s)
+
 def post_process(text: str, allow_two_sentences: bool = False) -> str:
-    """Keep answers short; strip fenced blocks; cap output."""
+    """(Kept for compatibility) Keep answers short if we ever fall back to raw text."""
     if not text:
         return "I couldn’t find that."
     if text.startswith("```"):
@@ -173,42 +198,37 @@ for i, n in enumerate(nodes, 1):
 ctx = "\n\n".join(numbered_ctx)
 
 # ─────────────────────────────────────────────────────────────
-# Compose messages — LLM-only answering, no Python fallbacks
+# NEW: Intent + JSON extraction + final formatting
 # ─────────────────────────────────────────────────────────────
-user_content = (
-    "TASK: Answer the question using the retrieved account data and agreement rules.\n"
-    "Hard rules:\n"
-    "- Never restate internal policies or field names.\n"
-    "- For transaction dates: use transactionDateTime; if missing use postingDateTime; ignore authDateTime.\n"
-    "- Consider only spend/outflow transactions when asked about “spend” or “where did I spend most”; "
-    "exclude payment, refund, credit, interest.\n"
-    "- Keep answers short, natural, and user-friendly per the selected style profile.\n"
-    "- Output dates in a clear human format (e.g., September 1, 2024)."
-    + default_timeframe_hint +
-    "\n\nUse only this context:\n" + ctx +
-    "\n\nQuestion: " + q
-)
+intent = detect_intent(q)
+extraction_prompt = build_extraction_prompt(intent, q, ctx)
 
+# Compose messages for JSON-only extraction (keeps your SYSTEM prompt active)
 messages = [
     ChatMessage(role="system", content=SYSTEM),
-    ChatMessage(role="user", content=user_content),
+    ChatMessage(role="user", content=extraction_prompt),
 ]
 
-# ─────────────────────────────────────────────────────────────
-# Ask the LLM (spinner) and render
-# ─────────────────────────────────────────────────────────────
 with st.spinner("Thinking..."):
     resp = Settings.llm.chat(messages)
 
 raw = (resp.message.content or "").strip()
-allow_two = (STYLE_PROFILE in {"detailed", "audit"})
-answer = post_process(raw, allow_two_sentences=allow_two)
 
-st.chat_message("assistant").write(answer)
+# Try to parse JSON
+final_answer = None
+try:
+    data = _coerce_json(raw)
+    final_answer = format_answer(intent, data)
+except Exception:
+    # If the model didn't return JSON, fall back to your previous single-sentence post_processor
+    allow_two = (STYLE_PROFILE in {"detailed", "audit"})
+    final_answer = post_process(raw, allow_two_sentences=allow_two)
+
+st.chat_message("assistant").write(final_answer)
 
 # Keep history
 st.session_state.history.append({"role": "user", "content": q})
-st.session_state.history.append({"role": "assistant", "content": answer})
+st.session_state.history.append({"role": "assistant", "content": final_answer})
 
 # Optional: show retrieved context for transparency
 with st.expander("Retrieved context", expanded=False):
@@ -219,4 +239,4 @@ with st.expander("Retrieved context", expanded=False):
             f"merchant={md.get('merchantName')}  amount={md.get('amount')}"
         )
         body = n.node.get_content()
-        st.write((body[:1500] + ("..." if len(body) > 1500 else "")))
+        st.write((body[:1500] + ('...' if len(body) > 1500 else '')))

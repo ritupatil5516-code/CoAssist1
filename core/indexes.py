@@ -160,8 +160,9 @@ def build_indexes(data_dir: str) -> Built:
                     "dt_iso": dt_iso,
                     "ym": _ym(dt_iso),
                     "statementId": r.get("statementId"),
-                    "dueDate": r.get("dueDate"),
+                    "openingDateTime": r.get("openingDateTime"),  # ← add this
                     "closingDateTime": r.get("closingDateTime"),
+                    "dueDate": r.get("dueDate"),
                     "interestCharged": r.get("interestCharged"),
                     "minimumPaymentDue": r.get("minimumPaymentDue"),
                     "newBalance": r.get("newBalance"),
