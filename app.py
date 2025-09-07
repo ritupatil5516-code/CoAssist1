@@ -156,17 +156,15 @@ if not q:
 st.chat_message("user").write(q)
 
 # Decide spend-style query and normalize timeframe to CURRENT CALENDAR MONTH if unspecified
-is_spend_query = any(
-    k in q.lower() for k in ["spend", "top merchant", "most", "highest spend"]
-)
+is_spend_query = any(k in q.lower() for k in ["spend", "top merchant", "most", "highest spend"])
+is_interest_total_query = any(k in q.lower() for k in ["interest this", "how much interest", "total interest"])
 
 default_timeframe_hint = ""
-if is_spend_query and not _mentions_timeframe(q):
+if (is_spend_query or is_interest_total_query) and not _mentions_timeframe(q):
     default_timeframe_hint = (
-        "\n- If no timeframe is specified, assume the **current calendar month** "
+        "\n- If no timeframe is specified for spend/interest totals, assume the **current calendar month** "
         "(from the 1st of this month to today) and include the phrase “this month”."
     )
-    # Normalize the user text to reduce variance
     q += " (assume current calendar month)"
 
 # ─────────────────────────────────────────────────────────────
