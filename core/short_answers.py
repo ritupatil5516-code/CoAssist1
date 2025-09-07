@@ -1,13 +1,78 @@
 # core/short_answers.py
 from __future__ import annotations
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 import re
 from datetime import datetime
 from dateutil import parser as dateparser
 
 CURRENCY = "USD"
 
-# ---------- small format helpers ----------
+# ----------------------------
+# Intent detection
+# ----------------------------
+def detect_intent(q: str) -> str:
+    s = (q or "").lower().strip()
+
+    # Explanations first (more specific)
+    if ("why" in s and "interest" in s) or ("reason" in s and "interest" in s):
+        return "interest_reason"
+
+    # Interest facts
+    if "how much" in s and "interest" in s and ("last" in s or "previous" in s):
+        return "interest_amount_last"
+    if "how much" in s and "interest" in s:
+        # allow generic "how much interest did i get charged"
+        return "interest_amount"
+    if "interest this month" in s or ("interest" in s and "this month" in s):
+        return "interest_total_month"
+    if "interest this year" in s or ("interest" in s and "this year" in s):
+        return "interest_total_year"
+    if ("how much" in s and "interest" in s and "statement" in s) or ("statement cycle" in s and "interest" in s):
+        return "interest_total_statement"
+
+    # Dates
+    if ("when" in s and "last interest" in s) or ("when" in s and "interest" in s and "last" in s):
+        return "interest_date_last"
+
+    # Payments
+    if ("when" in s and "last payment" in s) or ("last payment" in s and "when" in s):
+        return "last_payment_date"
+    if ("what" in s and "last payment" in s and "amount" in s) or ("last payment amount" in s):
+        return "last_payment_amount"
+    if "what was my last payment" in s and "amount" not in s and "when" not in s:
+        return "last_payment_amount"
+
+    # Balances / status
+    if "statement balance" in s:
+        return "statement_balance"
+    if "current balance" in s or ("balance" in s and "statement" not in s):
+        return "current_balance"
+    if "account status" in s or "status of my account" in s:
+        return "account_status"
+
+    # Transactions
+    if "last posted transaction" in s:
+        return "last_posted_transaction"
+
+    # Spend
+    if "where did i spend most" in s or "top merchant" in s:
+        return "top_merchants"
+    if "how much did i spend" in s and "year" in s:
+        return "spend_total_year"
+    if "how much did i spend" in s and "month" in s:
+        return "spend_total_month"
+
+    return "generic"
+
+def is_explanatory_intent(intent: str) -> bool:
+    """Return True if the intent should produce multi-sentence explanations."""
+    return intent in {
+        "interest_reason",
+    }
+
+# ----------------------------
+# Formatting helpers
+# ----------------------------
 def ordinal(n: int) -> str:
     return "%d%s" % (n, "tsnrhtdd"[(n//10%10!=1)*(n%10<4)*n%10::4])
 
@@ -16,134 +81,72 @@ def pretty_date(dt_iso: str) -> str:
         return ""
     try:
         dt = dateparser.parse(dt_iso)
-        # Month Day(th) Year[, HH:MM]
-        base = f"{dt.strftime('%B')} {ordinal(dt.day)} {dt.year}" if getattr(dt, "day", None) else dt.strftime("%B %Y")
+        # e.g., "September 1, 2024" and include time if present (HH:MM)
+        base = f"{dt.strftime('%B')} {ordinal(dt.day)}, {dt.year}"
         if dt.hour or dt.minute:
-            hhmm = dt.strftime("%H:%M")
-            if hhmm != "00:00":
-                base += f", {hhmm}"
+            base += dt.strftime(", %H:%M")
         return base
     except Exception:
         return dt_iso
 
 def fmt_money(x: Optional[float]) -> str:
-    if x is None: return ""
-    try: return f"${float(x):,.2f}"
-    except Exception: return str(x)
+    if x is None:
+        return ""
+    try:
+        return f"${float(x):,.2f}"
+    except Exception:
+        return f"${x}"
 
-# ---------- intent detection ----------
-MONTH_WORDS = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)"
-
-def detect_intent(q: str) -> str:
-    s = q.lower().strip()
-
-    # balances + account
-    if "current balance" in s or ("balance" in s and "statement" not in s):
-        return "current_balance"
-    if "statement balance" in s:
-        return "statement_balance"
-    if "account status" in s or "status of my account" in s:
-        return "account_status"
-
-    # payments
-    if ("when" in s and "last payment" in s) or ("last payment" in s and "when" in s):
-        return "last_payment_date"
-    if "last payment amount" in s or ("what" in s and "last payment" in s and "amount" in s):
-        return "last_payment_amount"
-    if "what was my last payment" in s and "amount" not in s and "when" not in s:
-        return "last_payment_amount"
-
-    # last posted transaction
-    if "last posted transaction" in s:
-        return "last_posted_transaction"
-
-    # interest — last date/amount
-    if ("when" in s and "interest" in s and "last" in s) or ("last interest" in s and "when" in s):
-        return "interest_last_date"
-    if ("how much" in s and "last interest" in s) or ("last interest amount" in s):
-        return "interest_last_amount"
-
-    # totals this month/year/statement cycle
-    if ("how much" in s and "interest" in s and "this month" in s) or ("interest this month" in s):
-        return "interest_total_month"
-    if ("how much" in s and "interest" in s and "this year" in s) or ("interest this year" in s):
-        return "interest_total_year"
-    if "statement cycle" in s and "interest" in s:
-        return "interest_total_cycle"
-
-    # interest — last amount (handle “last time” phrasing)
-    if "how much" in s and "interest" in s and any(w in s for w in ["last", "previous", "most recent", "last time"]):
-        return "interest_last_amount"
-
-    # month-specific WHY (e.g., why interest in March?)
-    if "why" in s and "interest" in s and re.search(MONTH_WORDS, s):
-        return "interest_why_for_month"
-
-    # general WHY (e.g., why was I charged interest?)
-    if "why" in s and "interest" in s:
-        return "interest_why_generic"
-
-    # spend / top merchants are handled elsewhere in your app,
-    # but keep generic fallback for anything else:
-    return "generic"
-
-# ---------- JSON-extraction prompts ----------
+# ----------------------------
+# LLM extraction prompt
+# ----------------------------
 def build_extraction_prompt(intent: str, question: str, numbered_context: str) -> str:
     """
-    We ask the LLM to return a very small JSON object keyed by intent.
-    Keep keys minimal so we can format concise answers.
+    Instruct the LLM to return a *minimal* JSON object with only the keys for this intent.
+    All money must be numeric (no $); dates must be ISO strings.
     """
-    keys = {
-        # balances / account
+    fields = {
+        # Facts (one-liners)
         "current_balance": ["current_balance"],
         "statement_balance": ["statement_balance", "statement_ym"],
-        "account_status": ["account_status"],
-
-        # payments / transactions
         "last_payment_amount": ["payment_amount", "payment_date"],
         "last_payment_date": ["payment_date"],
         "last_posted_transaction": ["txn_date", "txn_amount", "merchant", "txn_type"],
-
-        # interest: last date/amount
-        "interest_last_date": ["interest_date"],
-        "interest_last_amount": ["interest_amount", "interest_date"],
-
-        # interest totals
+        "account_status": ["account_status"],
+        "interest_amount": ["interest_total", "interest_date"],
+        "interest_amount_last": ["interest_total", "interest_date"],
         "interest_total_month": ["interest_total", "ym"],
-        "interest_total_year":  ["interest_total", "year"],
-        "interest_total_cycle": ["interest_total", "cycle_open", "cycle_close"],
+        "interest_total_year": ["interest_total", "year"],
+        "interest_total_statement": ["interest_total", "statement_id", "ym"],
+        "interest_date_last": ["interest_date"],
 
-        # interest WHY
-        "interest_why_generic": [
-            "cause",                       # residual/trailing | carried balance | cash advance | late fee interest | etc.
-            "statement_open", "statement_close",
-            "interest_amount", "interest_date",
-            "transactions"                 # [{merchant, amount, date_iso}]
-        ],
-        "interest_why_for_month": [
-            "ym",                          # YYYY-MM you’re explaining
-            "cause",
-            "statement_open", "statement_close",
-            "interest_amount", "interest_date",
-            "transactions"
+        # Explanations (2–3 sentences)
+        # reason_text: brief, human explanation (e.g., trailing interest because previous cycle wasn't paid in full)
+        # driver_txns: optional list of merchant or txn ids/names that contributed
+        "interest_reason": [
+            "interest_total", "interest_date",
+            "reason_text", "period_start", "period_end",
+            "driver_txns"
         ],
 
-        # generic fallback
+        # Spend
+        "top_merchants": ["merchant", "amount", "ym"],
+        "spend_total_month": ["spend_total", "ym"],
+        "spend_total_year": ["spend_total", "year"],
+
         "generic": ["answer_text"],
     }
-    wanted = ", ".join(f'"{k}"' for k in keys.get(intent, ["answer_text"]))
 
-    # guardrails that matter for your data:
+    wanted = ", ".join(f'"{k}"' for k in fields.get(intent, ["answer_text"]))
     return f"""
-You are a banking assistant. Use only the context below.
-Return a MINIMAL JSON object having exactly these keys: {wanted}
+You are a banking assistant. Read ONLY the provided context and return a MINIMAL JSON object
+with exactly these keys (omit any you cannot determine): {wanted}.
 
-Formatting rules:
-- If a value is unknown, omit that key.
-- Money as NUMBER (no $ or commas). Dates as ISO (YYYY-MM-DD or full ISO).
-- For "transactions", return an array of objects with keys: merchant, amount, date_iso.
-- IMPORTANT date policy for transactions: use "transactionDateTime"; if missing use "postingDateTime"; ignore "authDateTime".
-- Prefer statement fields for interest totals/amounts when available (e.g., "interestCharged"); otherwise use interest transactions.
+Rules:
+- If a value is unknown, omit the key.
+- Money values must be numbers (no currency symbol).
+- Dates must be ISO (YYYY-MM-DD or full ISO).
+- Do not add any extra keys or explanations.
 
 Context:
 {numbered_context}
@@ -151,114 +154,156 @@ Context:
 User question: {question}
 
 Return JSON only:
-"""
+""".strip()
 
-# ---------- final formatting ----------
-def _one_sentence(s: str) -> str:
-    s = re.sub(r"\s+", " ", s or "").strip()
-    if not s:
-        return ""
-    first = re.split(r"(?<=[.!?])\s+", s)[0]
-    return first if first.endswith((".", "!", "?")) else first + "."
-
+# ----------------------------
+# Final textual answer formatting
+# ----------------------------
 def format_answer(intent: str, data: Dict) -> str:
-    # balances / account
+    # FACT one-liners
     if intent == "current_balance" and "current_balance" in data:
         return f"Your current balance is {fmt_money(data['current_balance'])}."
+
     if intent == "statement_balance":
         bal = data.get("statement_balance")
-        ym  = data.get("statement_ym")
-        if bal is not None and ym:  return f"Your statement balance for {ym} is {fmt_money(bal)}."
-        if bal is not None:         return f"Your statement balance is {fmt_money(bal)}."
+        ym = data.get("statement_ym")
+        if bal is not None and ym:
+            return f"Your statement balance for {ym} is {fmt_money(bal)}."
+        if bal is not None:
+            return f"Your statement balance is {fmt_money(bal)}."
+
+    if intent == "last_payment_amount":
+        amt = data.get("payment_amount")
+        dt = pretty_date(data.get("payment_date", ""))
+        if amt is not None and dt:
+            return f"Your last payment was {fmt_money(amt)} on {dt}."
+        if amt is not None:
+            return f"Your last payment was {fmt_money(amt)}."
+
+    if intent == "last_payment_date":
+        dt = pretty_date(data.get("payment_date", ""))
+        if dt:
+            return f"Your last payment date was {dt}."
+
+    if intent == "last_posted_transaction":
+        dt = pretty_date(data.get("txn_date", ""))
+        amt = data.get("txn_amount")
+        merch = data.get("merchant")
+        typ = data.get("txn_type")
+        parts: List[str] = []
+        if amt is not None: parts.append(fmt_money(amt))
+        if merch: parts.append(str(merch))
+        if typ: parts.append(str(typ).lower())
+        core = " • ".join(parts) if parts else "No details available"
+        return f"Your last posted transaction was on {dt}: {core}." if dt else f"Your last posted transaction: {core}."
+
+    if intent in {"interest_amount", "interest_amount_last"}:
+        tot = data.get("interest_total")
+        dt = pretty_date(data.get("interest_date", ""))
+        if tot is not None and dt:
+            return f"Your last interest charge was {fmt_money(tot)} on {dt}."
+        if tot is not None:
+            return f"Your last interest charge was {fmt_money(tot)}."
+
+    if intent == "interest_total_month":
+        tot = data.get("interest_total")
+        ym = data.get("ym")
+        if tot is not None and ym:
+            return f"Your total interest for {ym} is {fmt_money(tot)}."
+        if tot is not None:
+            return f"Your total interest is {fmt_money(tot)}."
+
+    if intent == "interest_total_year":
+        tot = data.get("interest_total")
+        yr = data.get("year")
+        if tot is not None and yr:
+            return f"Your total interest in {yr} is {fmt_money(tot)}."
+        if tot is not None:
+            return f"Your total interest is {fmt_money(tot)}."
+
+    if intent == "interest_total_statement":
+        tot = data.get("interest_total")
+        ym = data.get("ym")
+        if tot is not None and ym:
+            return f"Your statement-cycle interest for {ym} is {fmt_money(tot)}."
+        if tot is not None:
+            return f"Your statement-cycle interest is {fmt_money(tot)}."
+
+    if intent == "interest_date_last":
+        dt = pretty_date(data.get("interest_date", ""))
+        if dt:
+            return f"Last interest was applied on {dt}."
 
     if intent == "account_status" and "account_status" in data:
         return f"Your account status is {data['account_status']}."
 
-    # payments
-    if intent == "last_payment_amount":
-        amt = data.get("payment_amount")
-        dt  = pretty_date(data.get("payment_date", ""))
-        if amt is not None and dt:  return f"Your last payment was {fmt_money(amt)} on {dt}."
-        if amt is not None:         return f"Your last payment was {fmt_money(amt)}."
-    if intent == "last_payment_date":
-        dt = pretty_date(data.get("payment_date", ""))
-        if dt: return f"Your last payment date was {dt}."
-
-    # last posted txn
-    if intent == "last_posted_transaction":
-        dt  = pretty_date(data.get("txn_date",""))
-        amt = data.get("txn_amount")
-        merch = data.get("merchant")
-        typ = data.get("txn_type")
-        bits = []
-        if amt is not None: bits.append(fmt_money(amt))
-        if merch: bits.append(str(merch))
-        if typ:   bits.append(str(typ).lower())
-        core = " • ".join(bits) if bits else "No details available"
-        return f"Your last posted transaction was on {dt}: {core}." if dt else f"Your last posted transaction: {core}."
-
-    # interest: last date/amount
-    if intent == "interest_last_date":
-        dt = pretty_date(data.get("interest_date",""))
-        if dt: return f"Last interest was applied on {dt}."
-    if intent == "interest_last_amount":
-        amt = data.get("interest_amount")
-        dt  = pretty_date(data.get("interest_date",""))
-        if amt is not None and dt:  return f"Your last interest charge was {fmt_money(amt)} on {dt}."
-        if amt is not None:         return f"Your last interest charge was {fmt_money(amt)}."
-
-    # interest totals
-    if intent == "interest_total_month":
-        tot = data.get("interest_total")
-        ym  = data.get("ym")
-        if tot is not None and ym:  return f"Your interest for {ym} is {fmt_money(tot)}."
-        if tot is not None:         return f"Your interest this month is {fmt_money(tot)}."
-    if intent == "interest_total_year":
-        tot = data.get("interest_total")
-        yr  = data.get("year")
-        if tot is not None and yr:  return f"Your interest for {yr} is {fmt_money(tot)}."
-        if tot is not None:         return f"Your interest this year is {fmt_money(tot)}."
-    if intent == "interest_total_cycle":
-        tot = data.get("interest_total")
-        op  = pretty_date(data.get("cycle_open",""))
-        cl  = pretty_date(data.get("cycle_close",""))
-        if tot is not None and (op or cl):
-            win = f"{op}–{cl}".strip("–")
-            return f"Your interest for the statement cycle {win} is {fmt_money(tot)}."
+    if intent == "spend_total_month":
+        tot = data.get("spend_total")
+        ym = data.get("ym")
+        if tot is not None and ym:
+            return f"You spent {fmt_money(tot)} in {ym}."
         if tot is not None:
-            return f"Your interest for the statement cycle is {fmt_money(tot)}."
+            return f"You spent {fmt_money(tot)}."
 
-    # interest WHY (generic or month-specific)
-    if intent in {"interest_why_generic", "interest_why_for_month"}:
-        cause = data.get("cause")
-        op = pretty_date(data.get("statement_open",""))
-        cl = pretty_date(data.get("statement_close",""))
-        win = f" during {op}–{cl}" if (op or cl) else ""
-        amt = data.get("interest_amount")
-        dt  = pretty_date(data.get("interest_date",""))
-        lead = []
+    if intent == "spend_total_year":
+        tot = data.get("spend_total")
+        yr = data.get("year")
+        if tot is not None and yr:
+            return f"You spent {fmt_money(tot)} in {yr}."
+        if tot is not None:
+            return f"You spent {fmt_money(tot)}."
+
+    if intent == "top_merchants":
+        merch = data.get("merchant")
+        amt = data.get("amount")
+        ym = data.get("ym")
+        if merch and amt is not None and ym:
+            return f"You spent most at {merch} in {ym}, totaling {fmt_money(amt)}."
+        if merch and amt is not None:
+            return f"You spent most at {merch}, totaling {fmt_money(amt)}."
+
+    # EXPLANATIONS (2–3 short sentences)
+    if intent == "interest_reason":
+        amt = data.get("interest_total")
+        dt = pretty_date(data.get("interest_date", ""))
+        reason = (data.get("reason_text") or "").strip()
+        start = pretty_date(data.get("period_start", ""))
+        end = pretty_date(data.get("period_end", ""))
+        drivers = data.get("driver_txns") or []
+        pieces: List[str] = []
+
+        # Sentence 1: headline
         if amt is not None and dt:
-            lead.append(f"Interest of {fmt_money(amt)} was applied on {dt}")
+            pieces.append(f"Interest of {fmt_money(amt)} was charged on {dt}.")
         elif amt is not None:
-            lead.append(f"Interest of {fmt_money(amt)} was applied")
-        if cause:
-            lead.append(f"due to {cause}")
-        msg = " ".join(lead) + (win if lead else "")
-        # include up to two responsible transactions if present
-        txns: List[Dict] = data.get("transactions") or []
-        if txns:
-            items = []
-            for t in txns[:2]:
-                m = str(t.get("merchant") or "").strip()
-                a = fmt_money(t.get("amount"))
-                d = pretty_date(t.get("date_iso",""))
-                if m and a and d: items.append(f"{m} {a} on {d}")
-                elif m and a:     items.append(f"{m} {a}")
-            if items:
-                msg += f". Examples: " + "; ".join(items)
-        return _one_sentence(msg) or "Interest was charged due to trailing balance."
+            pieces.append(f"Interest of {fmt_money(amt)} was charged.")
+        elif dt:
+            pieces.append(f"Interest was charged on {dt}.")
+        else:
+            pieces.append("Interest was charged.")
 
-    # generic fallback
+        # Sentence 2: reason
+        if reason:
+            pieces.append(reason)
+        elif start or end:
+            # generic trailing interest explanation with period window
+            if start and end:
+                pieces.append(f"This reflects trailing interest accruing between {start} and {end}.")
+            else:
+                pieces.append("This reflects trailing interest that accrued after the prior statement.")
+
+        # Sentence 3: drivers (optional)
+        if isinstance(drivers, list) and drivers:
+            # Show up to two drivers to stay concise
+            show = [str(x) for x in drivers[:2]]
+            tail = " and others" if len(drivers) > 2 else ""
+            pieces.append(f"Contributing transactions include {', '.join(show)}{tail}.")
+
+        return " ".join(pieces).strip()
+
+    # GENERIC fallback: first sentence only
     if "answer_text" in data and isinstance(data["answer_text"], str):
-        return _one_sentence(data["answer_text"]) or "I couldn’t find that."
-    return "I couldn’t find that."
+        s = re.split(r"[.!?]", data["answer_text"].strip())[0]
+        return (s + ".") if s else "I couldn't find that."
+
+    return "I couldn't find that."
