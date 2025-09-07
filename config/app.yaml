@@ -1,0 +1,18 @@
+# config/app.yaml
+llm:
+  # your LLM name is still set in core/llm.py; this is just for reference
+  style_profile: concise        # one of: concise | detailed | audit
+
+retrieval:
+  use_hybrid: true              # FAISS + BM25 hybrid
+  alpha: 0.60                   # FAISS share in hybrid merge (0..1)
+  candidates_n: 40              # initial retrieved nodes before rerank
+  final_k: 8                    # nodes to pass to LLM after rerank
+  freshness_lambda_per_day: 0.01
+
+reranker:
+  # none | llm
+  name: llm
+
+ui:
+  show_retrieved_context: true  # keep transparency expander

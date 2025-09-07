@@ -439,3 +439,29 @@ It’s a chat app where:
 	•	short_answers.py = intent detection + answer formatting
 	•	prompts/ = rules for LLM behavior
 	•	data/ = raw banking info
+
+
+Candidates N and Final K is about balancing coverage vs precision:
+	•	Candidates N (40 in your screenshot) → how many documents (nodes) you initially pull from FAISS + BM25 before any reranking.
+	•	If too low → you might miss relevant context.
+	•	If too high → you add noise and slow things down.
+	•	Final K (8 in your screenshot) → how many of those candidates you actually pass to the LLM.
+	•	If too low → the LLM may not see enough context.
+	•	If too high → the LLM sees too much irrelevant context and may get distracted (and costs more tokens).
+
+💡 Typical sweet spots for RAG systems:
+	•	Candidates N: 30–60
+	•	Enough to ensure you don’t miss relevant data.
+	•	You’re already at 40, which is very reasonable.
+	•	Final K: 5–10
+	•	Small enough to keep answers sharp, but large enough to cover variations in phrasing.
+	•	You’re at 8, which is right in the good zone.
+
+👉 Practical tuning steps for your app:
+	1.	Start with N=40, K=8 (your current setup).
+	2.	If you notice missing info in answers → increase N to 60 (but keep K ~ 8).
+	3.	If you notice answers too verbose or wrong context creeping in → reduce K to 5–6.
+	4.	If performance slows down → lower N a bit (30–35), since FAISS + BM25 retrieval cost grows linearly with N.
+
+Since you’re also using LLM reranker, you can safely keep N higher (40–60), because reranker will filter noise before K is passed to the LLM.
+
