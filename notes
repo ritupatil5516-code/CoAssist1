@@ -345,3 +345,97 @@ For Llama-70B on banking JSON + agreement PDF:
 	•	Never exceed ~15 unless you know the question truly spans many documents.
 
 
+
+
+1. What the app does
+	•	Takes in JSON data about accounts, statements, transactions, and payments (from /data folder).
+	•	Turns all of that into a searchable knowledge base (FAISS vectors + BM25 keywords).
+	•	When the agent types a question (“what’s the current balance?”, “why was interest charged in March?”), the app:
+	1.	Finds the right snippets of data (retrieval).
+	2.	Feeds them to the LLM (e.g., OpenAI / Qwen / LlamaIndex).
+	3.	LLM answers with structured JSON (only the fields we ask for).
+	4.	We format that JSON into a clean, simple sentence for the agent.
+
+⸻
+
+2. Key folders and files
+
+project/
+│
+├── app.py               # Main Streamlit app (chat UI, retrieval, spinner, history)
+│
+├── core/
+│   ├── indexes.py       # Loads data → builds FAISS + BM25 search indexes
+│   ├── llm.py           # Defines how we connect to LLM + embedding model
+│   ├── retrieve.py      # Hybrid retrieval (vector + BM25) + freshness scoring
+│   ├── reranker.py      # Optional LLM reranker to re-order candidates
+│   ├── short_answers.py # Detects intent + formats final answers
+│
+├── prompts/
+│   ├── system.md        # Base system prompt
+│   ├── assistant_style.md  # Tone/style (concise, detailed, audit)
+│   ├── concise_rules.md    # Rules for short answers
+│   └── detailed_rules.md   # Rules for longer answers
+│
+└── data/                # Banking JSON files (account-summary.json, transactions.json, etc.)
+
+3. Flow of a question
+	1.	Agent asks a question in the Streamlit chat.
+→ Example: “When was I last charged interest?”
+	2.	app.py
+	•	Shows the question in a bubble.
+	•	Decides if it’s a spend/interest/timeframe type query.
+	•	Sends the question to the retrieval pipeline.
+	3.	Retrieval
+	•	indexes.py provides all nodes (accounts, statements, txns, payments).
+	•	retrieve.py runs hybrid retrieval:
+	•	FAISS (semantic match).
+	•	BM25 (keyword match).
+	•	Combines them with freshness weighting.
+	•	Top results (nodes) are passed to the LLM.
+	4.	LLM prompt
+	•	We send a system prompt (rules + style).
+	•	Add retrieved context (numbered snippets).
+	•	Add user question.
+	•	Example instruction:
+“Return only JSON with keys: interest_date, interest_amount.”
+	5.	LLM returns JSON
+	•	Example:
+	{ "interest_date": "2024-09-01", "interest_amount": 43.78 }
+
+6.	short_answers.py
+	•	Detects intent → “interest_last_amount”.
+	•	Formats into English:
+“Your last interest charge was $43.78 on September 1st, 2024.”
+	7.	UI
+	•	Shows the answer in a yellow assistant bubble.
+	•	Also shows a collapsible “Retrieved context” section for debugging.
+
+⸻
+
+4. Why this design is good
+	•	Deterministic → LLM can’t hallucinate much, because it only sees retrieved banking data.
+	•	Explainable → Agents can expand “Retrieved context” to see what the answer came from.
+	•	Customizable → Style profiles (concise/detailed/audit) can be swapped in sidebar.
+	•	Extensible → Adding a new intent (e.g., “show last 5 transactions”) is just adding rules in short_answers.py.
+
+⸻
+
+5. Typical questions it handles
+	•	“What’s my current balance?”
+	•	“When was I last charged interest?”
+	•	“How much interest this month?”
+	•	“Why did I accrue interest?” (finds trailing interest + related txns).
+	•	“Where did I spend most this month?”
+	•	“When did I make my last payment?”
+
+⸻
+
+👉 In short:
+It’s a chat app where:
+	•	app.py = UI + orchestration
+	•	indexes.py = load data → searchable knowledge
+	•	retrieve.py = smart search
+	•	short_answers.py = intent detection + answer formatting
+	•	prompts/ = rules for LLM behavior
+	•	data/ = raw banking info

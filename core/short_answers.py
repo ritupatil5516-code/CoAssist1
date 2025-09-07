@@ -71,6 +71,10 @@ def detect_intent(q: str) -> str:
     if "statement cycle" in s and "interest" in s:
         return "interest_total_cycle"
 
+    # interest — last amount (handle “last time” phrasing)
+    if "how much" in s and "interest" in s and any(w in s for w in ["last", "previous", "most recent", "last time"]):
+        return "interest_last_amount"
+
     # month-specific WHY (e.g., why interest in March?)
     if "why" in s and "interest" in s and re.search(MONTH_WORDS, s):
         return "interest_why_for_month"
